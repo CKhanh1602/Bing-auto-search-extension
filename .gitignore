@@ -1,0 +1,21 @@
+# Dependencies
+node_modules/
+
+# OS files
+.DS_Store
+Thumbs.db
+desktop.ini
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# Agent/tool files
+.agent/
+
+# Build artifacts
+*.crx
+*.pem
+*.zip

@@ -1,0 +1,125 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <link href="https://fonts.googleapis.com/css2?family=Fira+Code:wght@400;500;600;700&family=Fira+Sans:wght@300;400;500;600;700&display=swap" rel="stylesheet">
+  <link rel="stylesheet" href="popup.css">
+</head>
+<body>
+  <div class="container">
+    <!-- Header -->
+    <header>
+      <div class="header-content">
+        <div class="logo-box">
+          <img src="icons/icon48.png" width="22" height="22" alt="Logo" style="border-radius: 4px; object-fit: contain;">
+        </div>
+        <h1 class="title">Bing Search Automator</h1>
+      </div>
+      <button id="btnSettings" class="btn-icon" title="Settings">
+        <svg xmlns="http://www.w3.org/2000/svg" width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 0 1 0 2.83 2 2 0 0 1-2.83 0l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-2 2 2 2 0 0 1-2-2v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 0 1-2.83 0 2 2 0 0 1 0-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1-2-2 2 2 0 0 1 2-2h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 0 1 0-2.83 2 2 0 0 1 2.83 0l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 2-2 2 2 0 0 1 2 2v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 0 1 2.83 0 2 2 0 0 1 0 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 2 2 2 2 0 0 1-2 2h-.09a1.65 1.65 0 0 0-1.51 1z"/></svg>
+      </button>
+    </header>
+
+    <!-- Settings Panel (Hidden by default) -->
+    <div id="settingsPanel" class="settings-panel card hidden">
+      <div class="settings-header">
+        <span class="section-title" id="lblSettingsTitle">Settings</span>
+        <button id="btnCloseSettings" class="btn-icon-sm">&times;</button>
+      </div>
+      <div class="settings-grid">
+        <div class="setting-row">
+          <label id="lblLanguage">Language / Ngôn ngữ</label>
+          <select id="selLanguage" class="select-input">
+            <option value="en">English</option>
+            <option value="vi">Tiếng Việt</option>
+          </select>
+        </div>
+        <div class="setting-row">
+          <label id="lblTheme">Theme / Giao diện</label>
+          <select id="selTheme" class="select-input">
+            <option value="dark">Dark Theme</option>
+            <option value="light">Light Theme</option>
+          </select>
+        </div>
+      </div>
+    </div>
+
+    <!-- Modern Status Section with Pulsing Dot -->
+    <section class="status-section card">
+      <div class="status-top">
+        <div class="status-indicator">
+          <span id="statusDot" class="status-dot dot-idle"></span>
+          <span id="statusBadge" class="badge badge-idle">READY</span>
+        </div>
+        <div class="progress-count font-mono">
+          <span id="progressText">0 / 0</span>
+        </div>
+      </div>
+      
+      <div class="status-text-row">
+        <span id="statusText" class="status-text">Waiting for action...</span>
+      </div>
+
+      <div class="progress-container">
+        <div id="progressBar" class="progress-bar"></div>
+      </div>
+    </section>
+
+    <!-- Config Section -->
+    <section class="config-section card">
+      <h2 class="section-title" id="lblSearchSettings">Search Settings</h2>
+      <div class="config-grid config-grid-3">
+        <div class="input-group">
+          <label for="desktopSearches" id="lblDesktopCount">Searches</label>
+          <input type="number" id="desktopSearches" value="30" min="1" max="60">
+        </div>
+        <div class="input-group">
+          <label for="minDelay" id="lblMinDelay">Min Delay (s)</label>
+          <input type="number" id="minDelay" value="10" min="3" max="60">
+        </div>
+        <div class="input-group">
+          <label for="maxDelay" id="lblMaxDelay">Max Delay (s)</label>
+          <input type="number" id="maxDelay" value="15" min="5" max="120">
+        </div>
+      </div>
+    </section>
+
+    <!-- Action Buttons -->
+    <section class="actions-section">
+      <!-- Tooltip / Hover Description Bar -->
+      <div id="tooltipBar" class="tooltip-bar">Hover over any button for description</div>
+
+      <!-- Row 1: 2 feature buttons (Quest, Desktop) -->
+      <div class="two-row">
+        <button id="btnQuest" class="btn btn-quest" data-desc-en="Auto click all Daily Set & More Activities cards" data-desc-vi="Tự động click làm tất cả Daily Set & More Activities">
+          <svg xmlns="http://www.w3.org/2000/svg" width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><polyline points="14 2 14 8 20 8"/><line x1="16" y1="13" x2="8" y2="13"/><line x1="16" y1="17" x2="8" y2="17"/></svg>
+          Quest
+        </button>
+        <button id="btnDesktop" class="btn btn-desktop" data-desc-en="Auto Bing Search — optimized for STAR Bonus" data-desc-vi="Tự động tìm kiếm Bing — tối ưu cho STAR Bonus">
+          <svg xmlns="http://www.w3.org/2000/svg" width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="11" cy="11" r="8"/><line x1="21" y1="21" x2="16.65" y2="16.65"/></svg>
+          Search
+        </button>
+      </div>
+
+      <!-- Row 2: "AUTO ALL" button -->
+      <button id="btnAll" class="btn btn-all" data-desc-en="Run Quest first, then Desktop Search (STAR optimized)" data-desc-vi="Tự động làm Quest trước, sau đó tìm kiếm Desktop (tối ưu STAR)">
+        <svg xmlns="http://www.w3.org/2000/svg" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polygon points="13 2 3 14 12 14 11 22 21 10 12 10 13 2"/></svg>
+        ⚡ AUTO ALL
+      </button>
+
+      <!-- Row 3: Control buttons -->
+      <div class="control-row">
+        <button id="btnPause" class="btn btn-pause" disabled data-desc-en="Temporarily freeze or resume automation" data-desc-vi="Tạm dừng hoặc tiếp tục tiến trình tự động">
+          <svg id="pauseIcon" xmlns="http://www.w3.org/2000/svg" width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="6" y="4" width="4" height="16"/><rect x="14" y="4" width="4" height="16"/></svg>
+          <span id="pauseText">Pause</span>
+        </button>
+        <button id="btnStop" class="btn btn-stop" disabled data-desc-en="Immediately stop and cancel all automation" data-desc-vi="Hủy bỏ và dừng hoàn toàn mọi tiến trình">
+          <svg xmlns="http://www.w3.org/2000/svg" width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="3" width="18" height="18" rx="2" ry="2"/></svg>
+          <span id="lblStopText">Stop</span>
+        </button>
+      </div>
+    </section>
+  </div>
+  <script src="popup.js"></script>
+</body>
+</html>
