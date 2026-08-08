@@ -1,9 +1,7 @@
 // ============================================================
-// Bing Search Automator - Background Service Worker (v2.1)
-// - Fast Async Batch Questing (scan & click next quest immediately while previous loads in background)
-// - Background tab handling (auto re-focus dashboard / keep new tabs in background)
-// - Batch close all quest tabs after all quests are clicked
-// - Search result 10% click closes target tab after 3s
+// Bing Search Automator - Background Service Worker (v2.0)
+// Removed Mobile Search, Improved Quest detection,
+// Optimized for Bing STAR Bonus
 // ============================================================
 
 let state = {
@@ -102,9 +100,9 @@ async function cdpClick(tabId, x, y) {
 
   try {
     await sendCDP(tabId, 'Input.dispatchMouseEvent', { type: 'mouseMoved', x: Math.round(x), y: Math.round(y) });
-    await delay(randomInt(60, 150));
+    await delay(randomInt(80, 200));
     await sendCDP(tabId, 'Input.dispatchMouseEvent', { type: 'mousePressed', x: Math.round(x), y: Math.round(y), button: 'left', clickCount: 1 });
-    await delay(randomInt(40, 100));
+    await delay(randomInt(40, 120));
     await sendCDP(tabId, 'Input.dispatchMouseEvent', { type: 'mouseReleased', x: Math.round(x), y: Math.round(y), button: 'left', clickCount: 1 });
   } finally {
     if (weAttached) try { await disableDebugger(tabId); } catch {}
@@ -119,7 +117,7 @@ function waitTabReady(tabId) {
     let timeout = setTimeout(() => {
       chrome.tabs.onUpdated.removeListener(listener);
       resolve();
-    }, 12000);
+    }, 15000);
     function listener(tid, info) {
       if (tid === tabId && info.status === 'complete') {
         clearTimeout(timeout);
@@ -161,8 +159,12 @@ async function getRewardsTab() {
 
 // ============================================================
 // STAR Bonus Optimized Query Generator
+// Natural, varied, realistic search queries that mimic
+// genuine human search behavior across multiple categories.
+// Bing STAR Bonus rewards "good faith" organic search behavior.
 // ============================================================
 const queryTemplates = {
+  // Category-based natural queries - mix of informational, navigational, transactional
   weather: [
     "weather today", "weather this week", "weather forecast weekend",
     "will it rain tomorrow", "temperature right now", "weather next 3 days"
@@ -220,6 +222,7 @@ const queryTemplates = {
   ]
 };
 
+// Build flat list and track usage to avoid repeats in same session
 let allQueries = [];
 let usedQueryIndices = new Set();
 
@@ -234,6 +237,7 @@ function buildQueryPool() {
 }
 buildQueryPool();
 
+// Also load external word list if available
 let externalWords = [];
 async function loadWords() {
   try {
@@ -247,9 +251,11 @@ async function loadWords() {
 loadWords();
 
 function generateQuery() {
+  // Reset pool if all queries used
   if (usedQueryIndices.size >= allQueries.length) {
     usedQueryIndices.clear();
   }
+  // Pick a random unused query
   let idx;
   do {
     idx = randomInt(0, allQueries.length - 1);
@@ -260,10 +266,14 @@ function generateQuery() {
 
 // ============================================================
 // Desktop Search Engine
-// Runs in background tab (active: false)
-// 10% search result click opens in background and closes after 3s
+// Optimized for Bing STAR Bonus:
+// - Natural varied queries (no repeats)
+// - Random delays with wider range
+// - Occasional result clicking for engagement
+// - Scroll behavior to simulate reading
 // ============================================================
 async function doDesktopSearches(cfg) {
+  // Add ±10% random jitter to search count so each day is different
   const baseCount = cfg.desktopSearches;
   const jitterRange = Math.max(1, Math.round(baseCount * 0.1));
   const count = baseCount + randomInt(-jitterRange, jitterRange);
@@ -271,7 +281,7 @@ async function doDesktopSearches(cfg) {
 
   update({ phase: 'search_desktop', statusText: 'Desktop Search...', total: count, current: 0 });
 
-  // Create background tab for searching (active: false)
+  // Create a background tab for searching
   let tab;
   try {
     tab = await chrome.tabs.create({ url: "https://www.bing.com", active: false });
@@ -290,57 +300,53 @@ async function doDesktopSearches(cfg) {
       await chrome.tabs.update(tab.id, { url: searchUrl });
       await waitTabReady(tab.id);
 
-      await delay(randomInt(800, 1800));
+      // Simulate natural reading behavior
+      await delay(randomInt(800, 2000));
 
-      // Scroll behavior
+      // Scroll down like reading results
       try {
         await chrome.scripting.executeScript({
           target: { tabId: tab.id },
           func: () => {
-            const scrollAmount = Math.floor(Math.random() * 500) + 150;
+            // Random scroll amount - sometimes scroll a lot, sometimes a little
+            const scrollAmount = Math.floor(Math.random() * 600) + 100;
             window.scrollBy({ top: scrollAmount, behavior: 'smooth' });
           }
         });
       } catch (e) {}
 
-      // STAR Bonus optimization: 10% chance to click a search result
-      // Opens result, waits 3s, then closes it / returns to search
+      // STAR Bonus optimization: Occasionally click a search result (10% chance)
+      // Opens result in a background tab, waits 3s, closes it
       if (Math.random() < 0.10) {
         try {
-          await delay(randomInt(500, 1200));
-
-          // Set up new tab listener before clicking link
-          let newTabPromise = waitNewTab(3000);
-
-          await chrome.scripting.executeScript({
+          await delay(randomInt(500, 1500));
+          // Get a result URL from the page
+          const urlResult = await chrome.scripting.executeScript({
             target: { tabId: tab.id },
             func: () => {
               const results = document.querySelectorAll('#b_results .b_algo h2 a');
               if (results.length > 0) {
                 const pick = results[Math.floor(Math.random() * Math.min(results.length, 3))];
-                if (pick) pick.click();
+                return pick ? pick.href : null;
               }
+              return null;
             }
           });
-
-          let resultTab = await newTabPromise;
-          if (resultTab) {
-            // New tab opened - wait 3s in background then close it!
+          const resultUrl = urlResult && urlResult[0] ? urlResult[0].result : null;
+          if (resultUrl) {
+            // Open in background tab (active: false = won't steal focus)
+            const bgTab = await chrome.tabs.create({ url: resultUrl, active: false });
             await delay(3000);
-            try { await chrome.tabs.remove(resultTab.id); } catch(e) {}
-          } else {
-            // Opened in same tab - wait 3s then navigate back
-            await delay(3000);
-            await chrome.tabs.update(tab.id, { url: "https://www.bing.com" });
-            await waitTabReady(tab.id);
+            try { await chrome.tabs.remove(bgTab.id); } catch (e) {}
           }
         } catch (e) {}
       }
 
-      // Random delay between searches (+/- 30% jitter)
+      // Delay between searches - wider random range for natural feel
       if (i < count - 1) {
         const minMs = cfg.minDelay * 1000;
         const maxMs = cfg.maxDelay * 1000;
+        // Add extra random variation (+/- 30%) to avoid fixed patterns
         const baseDelay = randomInt(minMs, maxMs);
         const jitter = Math.floor(baseDelay * (Math.random() * 0.3));
         await delay(baseDelay + (Math.random() > 0.5 ? jitter : -jitter / 2));
@@ -348,16 +354,15 @@ async function doDesktopSearches(cfg) {
     } catch (e) {}
   }
 
-  // Close background search tab
+  // Close search tab
   try { await chrome.tabs.remove(tab.id); } catch (e) {}
 }
 
 // ============================================================
-// Quest Engine - FAST Async Batch Mode
-// - Immediately switches back to Rewards dashboard tab after clicking
-// - Keeps all opened quest tabs in background (active: false)
-// - Scans & clicks next quest card immediately without waiting 3-5s for previous tab to finish loading!
-// - Closes ALL background quest tabs in a single batch at the end!
+// Quest Engine v3 - Parallel Pipeline
+// Scans ALL uncompleted cards → clicks them rapidly →
+// lets quest tabs load in background → closes all at once
+// Much faster than sequential one-by-one approach
 // ============================================================
 async function doQuests() {
   update({ phase: 'quests', statusText: 'Processing Quests...' });
@@ -368,77 +373,63 @@ async function doQuests() {
     await waitTabReady(tab.id);
   } catch (e) { return; }
 
-  await delay(2000);
+  // Wait for React rendering
+  await delay(2500);
 
-  // Track all opened quest tabs so we can batch-close them at the end
-  const openedQuestTabIds = [];
+  let rounds = 0;
+  const MAX_ROUNDS = 5; // max reload-and-rescan cycles
 
-  let iterations = 0;
-  let consecutiveNotFound = 0;
-  // Track clicked cards in this run to avoid re-clicking same card
-  const clickedCardTitles = new Set();
-
-  while (iterations < 25 && consecutiveNotFound < 3) {
+  while (rounds < MAX_ROUNDS) {
     if (shouldStop) break;
     await checkPause();
     if (shouldStop) break;
-    iterations++;
+    rounds++;
 
+    // ── STEP 1: Scan ALL uncompleted cards at once ──
+    let scanResult;
     try {
       const results = await chrome.scripting.executeScript({
         target: { tabId: tab.id },
-        args: [Array.from(clickedCardTitles)],
-        func: (alreadyClickedTitles) => {
-          const clickedSet = new Set(alreadyClickedTitles);
-
-          // Selectors for card containers
+        func: () => {
           const selectors = [
             '#dailyset a[data-react-aria-pressable="true"]',
             '#moreactivities a[data-react-aria-pressable="true"]',
-            '#more-activities a[data-react-aria-pressable="true"]',
+            '#more-activities a[data-react-aria-pressable="true"]'
+          ];
+          const additionalSelectors = [
             'a[data-react-aria-pressable="true"][target="_blank"]',
             'a[data-react-aria-pressable="true"][href*="rewards"]',
             'a[data-react-aria-pressable="true"][href*="bing.com"]'
           ];
 
           const allCards = new Set();
-          for (const sel of selectors) {
+          for (const sel of selectors.concat(additionalSelectors)) {
             try {
               document.querySelectorAll(sel).forEach(c => allCards.add(c));
             } catch (e) {}
           }
 
-          // Also check by section headings
+          // Strategy: headings
           const headingTexts = ['more activities', 'keep earning', 'earn more', 'daily set', 'hoạt động khác', 'kiếm thêm'];
-          document.querySelectorAll('h2, h3, [role="heading"]').forEach(h => {
+          const allHeadings = document.querySelectorAll('h2, h3, [role="heading"]');
+          for (const h of allHeadings) {
             const text = (h.textContent || '').toLowerCase().trim();
             if (headingTexts.some(t => text.includes(t))) {
               let container = h.parentElement;
               for (let level = 0; level < 4 && container; level++) {
                 const links = container.querySelectorAll('a[data-react-aria-pressable="true"]');
-                if (links.length > 0) {
-                  links.forEach(c => allCards.add(c));
-                  break;
-                }
+                if (links.length > 0) { links.forEach(c => allCards.add(c)); break; }
                 container = container.parentElement;
               }
             }
-          });
+          }
 
+          // Filter: find all UNCOMPLETED, NON-PROMO cards
+          const uncompleted = [];
           for (const card of allCards) {
             const cardText = (card.textContent || '').toLowerCase();
             const href = (card.getAttribute('href') || '').toLowerCase();
 
-            // Try to extract card title
-            const titleEl = card.querySelector(
-              '.text-globalBody2Strong, [class*="title"], [class*="Title"], h3, h4, strong'
-            );
-            const title = titleEl ? titleEl.textContent.trim() : cardText.slice(0, 30);
-
-            // Skip if already clicked in this run
-            if (clickedSet.has(title)) continue;
-
-            // Skip completed cards
             const isCompleted =
               cardText.includes('completed') ||
               cardText.includes('hoàn thành') ||
@@ -447,7 +438,6 @@ async function doQuests() {
               card.getAttribute('data-is-completed') === 'true';
             if (isCompleted) continue;
 
-            // Skip promo / referral cards
             const isPromo =
               cardText.includes('referral') || cardText.includes('refer') ||
               cardText.includes('invite') || cardText.includes('giới thiệu') ||
@@ -456,95 +446,163 @@ async function doQuests() {
 
             if (!href || href === '#' || href === 'javascript:void(0)') continue;
 
-            // Found valid uncompleted card!
             card.scrollIntoView({ behavior: 'instant', block: 'center' });
             const rect = card.getBoundingClientRect();
+            const titleEl = card.querySelector('.text-globalBody2Strong, [class*="title"], [class*="Title"], h3, h4, strong');
 
-            return {
-              found: true,
+            uncompleted.push({
               x: rect.left + rect.width / 2,
               y: rect.top + rect.height / 2,
-              title: title
-            };
+              title: titleEl ? titleEl.textContent.trim() : ''
+            });
           }
 
-          return { found: false };
+          return { cards: uncompleted, totalScanned: allCards.size };
         }
       });
-
-      const result = results && results[0] ? results[0].result : null;
-
-      if (!result || !result.found) {
-        consecutiveNotFound++;
-        // Scroll to reveal hidden cards
-        if (consecutiveNotFound === 1) {
-          try {
-            await chrome.scripting.executeScript({
-              target: { tabId: tab.id },
-              func: () => { window.scrollBy({ top: 400, behavior: 'smooth' }); }
-            });
-            await delay(1000);
-          } catch (e) {}
-        }
-        if (consecutiveNotFound === 2) {
-          try {
-            await chrome.scripting.executeScript({
-              target: { tabId: tab.id },
-              func: () => { window.scrollTo({ top: document.body.scrollHeight, behavior: 'smooth' }); }
-            });
-            await delay(1500);
-          } catch (e) {}
-        }
-        continue;
-      }
-
-      consecutiveNotFound = 0;
-      if (result.title) clickedCardTitles.add(result.title);
-
-      update({ statusText: `Quest: ${result.title || 'Clicking...'}` });
-
-      // Listen for new tab BEFORE clicking
-      let newTabPromise = waitNewTab(3000);
-      await cdpClick(tab.id, result.x, result.y);
-      let newTab = await newTabPromise;
-
-      if (newTab) {
-        openedQuestTabIds.push(newTab.id);
-        // FAST SWITCH: Immediately re-focus the Rewards dashboard tab!
-        // The newly opened quest tab loads in the background (running ngầm).
-        try {
-          await chrome.tabs.update(tab.id, { active: true });
-        } catch (e) {}
-      }
-
-      if (shouldStop) break;
-
-      // FAST ITERATION: Brief delay (600ms - 1000ms) before clicking next quest card!
-      // No longer waiting 3-5 seconds per card!
-      await delay(randomInt(600, 1000));
-
+      scanResult = results && results[0] ? results[0].result : null;
     } catch (e) { break; }
-  }
 
-  // ============================================================
-  // QUEST CLEANUP BATCH:
-  // All quests clicked! Wait 3 seconds for background tabs to finish loading,
-  // then close ALL opened quest tabs in one batch!
-  // ============================================================
-  if (openedQuestTabIds.length > 0) {
-    update({ statusText: `Waiting for ${openedQuestTabIds.length} quest tabs...` });
-    await delay(3000); // 3s wait for background tab registration
-
-    for (const qTabId of openedQuestTabIds) {
-      try { await chrome.tabs.remove(qTabId); } catch (e) {}
+    if (!scanResult || !scanResult.cards || scanResult.cards.length === 0) {
+      // Try scrolling down to reveal hidden cards
+      if (rounds === 1) {
+        try {
+          await chrome.scripting.executeScript({
+            target: { tabId: tab.id },
+            func: () => { window.scrollTo({ top: document.body.scrollHeight, behavior: 'smooth' }); }
+          });
+          await delay(2000);
+        } catch (e) {}
+        continue; // rescan after scroll
+      }
+      break; // No cards found after scroll → done
     }
-  }
 
-  // Refresh dashboard to show completed states
-  try {
+    const cards = scanResult.cards;
+    update({ statusText: `Quest: Found ${cards.length} tasks`, total: cards.length, current: 0 });
+
+    // ── STEP 2: Click all cards rapidly, collect opened tabs ──
+    const openedTabs = [];
+    // Track tabs opened before we start
+    const beforeTabs = new Set((await chrome.tabs.query({})).map(t => t.id));
+
+    for (let i = 0; i < cards.length; i++) {
+      if (shouldStop) break;
+      const card = cards[i];
+      update({ current: i + 1, statusText: `Quest: ${card.title || `Card ${i + 1}/${cards.length}`}` });
+
+      // Need to re-scroll to each card since page may have shifted
+      try {
+        await chrome.scripting.executeScript({
+          target: { tabId: tab.id },
+          func: (idx) => {
+            const selectors = [
+              '#dailyset a[data-react-aria-pressable="true"]',
+              '#moreactivities a[data-react-aria-pressable="true"]',
+              '#more-activities a[data-react-aria-pressable="true"]',
+              'a[data-react-aria-pressable="true"][target="_blank"]'
+            ];
+            const allCards = new Set();
+            for (const sel of selectors) {
+              try { document.querySelectorAll(sel).forEach(c => allCards.add(c)); } catch (e) {}
+            }
+            // Find uncompleted cards again and pick the idx-th one
+            let count = 0;
+            for (const card of allCards) {
+              const cardText = (card.textContent || '').toLowerCase();
+              const href = (card.getAttribute('href') || '').toLowerCase();
+              if (cardText.includes('completed') || cardText.includes('hoàn thành')) continue;
+              if (cardText.includes('referral') || cardText.includes('invite') || cardText.includes('giới thiệu')) continue;
+              if (!href || href === '#') continue;
+              if (card.querySelector('[aria-label*="Completed"]') || card.querySelector('[aria-label*="completed"]')) continue;
+              if (count === idx) {
+                card.scrollIntoView({ behavior: 'instant', block: 'center' });
+                return true;
+              }
+              count++;
+            }
+            return false;
+          },
+          args: [0] // Always click the FIRST uncompleted card (they shift as we click)
+        });
+      } catch (e) {}
+
+      // Short delay before click
+      await delay(randomInt(300, 600));
+
+      // Re-scan position of the first uncompleted card
+      let pos;
+      try {
+        const posResult = await chrome.scripting.executeScript({
+          target: { tabId: tab.id },
+          func: () => {
+            const selectors = [
+              '#dailyset a[data-react-aria-pressable="true"]',
+              '#moreactivities a[data-react-aria-pressable="true"]',
+              '#more-activities a[data-react-aria-pressable="true"]',
+              'a[data-react-aria-pressable="true"][target="_blank"]'
+            ];
+            const allCards = new Set();
+            for (const sel of selectors) {
+              try { document.querySelectorAll(sel).forEach(c => allCards.add(c)); } catch (e) {}
+            }
+            for (const card of allCards) {
+              const cardText = (card.textContent || '').toLowerCase();
+              const href = (card.getAttribute('href') || '').toLowerCase();
+              if (cardText.includes('completed') || cardText.includes('hoàn thành')) continue;
+              if (cardText.includes('referral') || cardText.includes('invite') || cardText.includes('giới thiệu')) continue;
+              if (!href || href === '#') continue;
+              if (card.querySelector('[aria-label*="Completed"]') || card.querySelector('[aria-label*="completed"]')) continue;
+              const rect = card.getBoundingClientRect();
+              return { x: rect.left + rect.width / 2, y: rect.top + rect.height / 2 };
+            }
+            return null;
+          }
+        });
+        pos = posResult && posResult[0] ? posResult[0].result : null;
+      } catch (e) {}
+
+      if (!pos) break; // No more uncompleted cards
+
+      // Click via CDP
+      await cdpClick(tab.id, pos.x, pos.y);
+
+      // Brief pause to let tab open
+      await delay(randomInt(800, 1200));
+
+      // Immediately switch back to rewards tab (don't wait for quest page to load)
+      try { await chrome.tabs.update(tab.id, { active: true }); } catch (e) {}
+    }
+
+    // ── STEP 3: Collect all newly opened tabs ──
+    await delay(1000);
+    const afterTabs = await chrome.tabs.query({});
+    for (const t of afterTabs) {
+      if (!beforeTabs.has(t.id) && t.id !== tab.id) {
+        openedTabs.push(t.id);
+      }
+    }
+
+    // ── STEP 4: Wait for quest tabs to load (they're loading in background) ──
+    if (openedTabs.length > 0) {
+      update({ statusText: `Quest: Waiting for ${openedTabs.length} tasks to register...` });
+      // Wait a fixed time for all quest pages to load and register points
+      await delay(randomInt(4000, 6000));
+
+      // ── STEP 5: Close ALL quest tabs at once ──
+      for (const tid of openedTabs) {
+        try { await chrome.tabs.remove(tid); } catch (e) {}
+      }
+    }
+
+    if (shouldStop) break;
+
+    // ── STEP 6: Reload dashboard and rescan ──
+    update({ statusText: 'Quest: Refreshing dashboard...' });
     await chrome.tabs.update(tab.id, { active: true, url: "https://rewards.bing.com/" });
     await waitTabReady(tab.id);
-  } catch (e) {}
+    await delay(2500);
+  }
 }
 
 // ============================================================
@@ -562,11 +620,11 @@ async function runEngine(action, cfg) {
       await doDesktopSearches(cfg);
     }
     else if (action === 'START_ALL') {
-      // 1. Quests first (fast batch)
+      // 1. Quests first
       await doQuests();
       if (shouldStop) { finish('Stopped', 'stopped'); return; }
 
-      // 2. Desktop Search (background tab)
+      // 2. Desktop Search
       await doDesktopSearches(cfg);
     }
 
