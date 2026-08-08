@@ -1,7 +1,7 @@
 {
   "manifest_version": 3,
   "name": "Bing Search Automator",
-  "version": "2.0.0",
+  "version": "2.1.0",
   "description": "Auto Bing Search (STAR Bonus optimized) + Daily Quests & Activities for Microsoft Rewards",
   "permissions": [
     "debugger",
