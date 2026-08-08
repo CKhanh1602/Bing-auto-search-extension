@@ -15,7 +15,7 @@ A Chrome/Edge extension that automates daily Microsoft Rewards tasks — Bing se
 
 ## 📸 Screenshot
 
-![Bing Search Automator](icons/icon128.png)
+![Bing Search Automator](screenshot.png)
 
 ## 🚀 Installation
 
