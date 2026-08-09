@@ -55,6 +55,12 @@ function broadcast() {
   chrome.runtime.sendMessage({ action: 'STATUS_UPDATE', state }).catch(() => {});
 }
 
+function addLog(text) {
+  const now = new Date();
+  const ts = `[${String(now.getHours()).padStart(2,'0')}:${String(now.getMinutes()).padStart(2,'0')}:${String(now.getSeconds()).padStart(2,'0')}]`;
+  console.log(`${ts} ${text}`);
+}
+
 async function checkPause() {
   while (isPaused && !shouldStop) {
     await new Promise(resolve => { pauseResolver = resolve; });
@@ -359,25 +365,13 @@ async function doDesktopSearches(cfg) {
 }
 
 // ============================================================
-// Quest Engine v3 - Parallel Pipeline
-// Scans ALL uncompleted cards → clicks them rapidly →
-// lets quest tabs load in background → closes all at once
-// Much faster than sequential one-by-one approach
-// ============================================================
-async function doQuests() {
-  update({ phase: 'quests', statusText: 'Processing Quests...' });
-  let tab = await getRewardsTab();
-  if (shouldStop) return;
-  try {
-    await chrome.tabs.update(tab.id, { active: true });
-    await waitTabReady(tab.id);
-  } catch (e) { return; }
-
-  // Wait for React rendering
-  await delay(2500);
-
+// Quest Engine v4 - 2-Page Parallel Pipeline
+// Page 1: /dashboard → "Quests" section
+// Page 2: /earn      → "Keep earning" section
+// ============================================================// Helper: Process all quest cards on the CURRENT page in tab
+async function processQuestsOnPage(tab, pageName) {
   let rounds = 0;
-  const MAX_ROUNDS = 5; // max reload-and-rescan cycles
+  const MAX_ROUNDS = 3;
 
   while (rounds < MAX_ROUNDS) {
     if (shouldStop) break;
@@ -385,174 +379,284 @@ async function doQuests() {
     if (shouldStop) break;
     rounds++;
 
-    // ── STEP 1: Scan ALL uncompleted cards at once ──
+    // Step-by-step scroll down and up to force React lazy rendering
+    try {
+      await chrome.scripting.executeScript({
+        target: { tabId: tab.id },
+        func: async () => {
+          const totalHeight = document.body.scrollHeight;
+          let currentPos = 0;
+          while (currentPos < totalHeight) {
+            window.scrollBy(0, 400);
+            currentPos += 400;
+            await new Promise(r => setTimeout(r, 100));
+          }
+          await new Promise(r => setTimeout(r, 500));
+          window.scrollTo({ top: 0, behavior: 'instant' });
+        }
+      });
+      await delay(800);
+    } catch (e) {}
+
+    // ── Scan uncompleted cards ──
     let scanResult;
     try {
       const results = await chrome.scripting.executeScript({
         target: { tabId: tab.id },
-        func: () => {
-          const selectors = [
-            '#dailyset a[data-react-aria-pressable="true"]',
-            '#moreactivities a[data-react-aria-pressable="true"]',
-            '#more-activities a[data-react-aria-pressable="true"]'
-          ];
-          const additionalSelectors = [
-            'a[data-react-aria-pressable="true"][target="_blank"]',
-            'a[data-react-aria-pressable="true"][href*="rewards"]',
-            'a[data-react-aria-pressable="true"][href*="bing.com"]'
-          ];
+        args: [pageName],
+        func: (isEarnPage) => {
+          let cardPool = [];
 
-          const allCards = new Set();
-          for (const sel of selectors.concat(additionalSelectors)) {
-            try {
-              document.querySelectorAll(sel).forEach(c => allCards.add(c));
-            } catch (e) {}
-          }
+          if (isEarnPage === 'Earn') {
+            // ── EARN PAGE: STRICTLY target ONLY the "Keep Earning" section ──
+            const headings = Array.from(document.querySelectorAll('h2, h3, [role="heading"], div'));
+            const keepEarningHeading = headings.find(h => {
+              const txt = (h.textContent || '').toLowerCase().trim();
+              return txt === 'keep earning' || txt.includes('keep earning');
+            });
 
-          // Strategy: headings
-          const headingTexts = ['more activities', 'keep earning', 'earn more', 'daily set', 'hoạt động khác', 'kiếm thêm'];
-          const allHeadings = document.querySelectorAll('h2, h3, [role="heading"]');
-          for (const h of allHeadings) {
-            const text = (h.textContent || '').toLowerCase().trim();
-            if (headingTexts.some(t => text.includes(t))) {
-              let container = h.parentElement;
-              for (let level = 0; level < 4 && container; level++) {
-                const links = container.querySelectorAll('a[data-react-aria-pressable="true"]');
-                if (links.length > 0) { links.forEach(c => allCards.add(c)); break; }
+            if (keepEarningHeading) {
+              let container = keepEarningHeading.parentElement;
+              for (let level = 0; level < 5 && container; level++) {
+                const links = container.querySelectorAll('a[data-react-aria-pressable="true"], a[href], [role="button"]');
+                if (links.length >= 2) {
+                  cardPool = Array.from(links);
+                  break;
+                }
                 container = container.parentElement;
               }
             }
+
+            if (cardPool.length === 0) {
+              cardPool = Array.from(document.querySelectorAll('a[data-react-aria-pressable="true"]'));
+            }
+          } else {
+            // ── DASHBOARD PAGE: Comprehensive card discovery ──
+            const selectors = [
+              '#dailyset a',
+              '#moreactivities a',
+              '#more-activities a',
+              '[id*="daily"] a',
+              '[id*="more"] a',
+              'a[data-react-aria-pressable="true"]',
+              'div[data-react-aria-pressable="true"]',
+              '[class*="card"] a[href]',
+              '[class*="Card"] a[href]'
+            ];
+            const set = new Set();
+            for (const sel of selectors) {
+              document.querySelectorAll(sel).forEach(el => set.add(el));
+            }
+            cardPool = Array.from(set);
           }
 
-          // Filter: find all UNCOMPLETED, NON-PROMO cards
+          const checkValid = (card) => {
+            const t = (card.textContent || '').toLowerCase();
+            const h = (card.getAttribute('href') || '').toLowerCase();
+            const r = card.getBoundingClientRect();
+
+            // 1. Skip invisible or tiny elements
+            if (r.width < 50 || r.height < 30) return false;
+
+            // 2. CRITICAL: Skip Header, Navbar, Footer, and Tab Navigation elements
+            if (card.getAttribute('role') === 'tab' || card.closest('[role="tablist"], [role="tab"]')) return false;
+            if (card.closest('header, nav, footer, [role="navigation"], [class*="Header"], [class*="header"], [class*="navigation"], [class*="navBar"], [class*="navbar"], [class*="nav_"], [class*="Nav_"]')) return false;
+
+            // 3. CRITICAL: Skip top-level navigation pages and URLs
+            if (h.includes('/about') || h.includes('/refer') || h.includes('/redeem') || h.includes('/status') || h.includes('/welcome') || h.includes('/shop') || h.includes('/dashboard') || h.includes('/earn') || h.includes('/dash')) return false;
+
+            // 4. CRITICAL: Skip navigation tab titles
+            const cleanTxt = t.trim();
+            if (cleanTxt === 'dashboard' || cleanTxt === 'earn' || cleanTxt === 'redeem' || cleanTxt === 'about' || cleanTxt === 'refer and earn' || t.includes('trạng thái') || t.includes('người chiến thắng')) return false;
+
+            // 5. Skip Completed cards
+            if (t.includes('completed') || t.includes('hoàn thành')) return false;
+            if (card.querySelector('[aria-label*="Completed"]') || card.querySelector('[aria-label*="completed"]')) return false;
+            if (card.getAttribute('data-is-completed') === 'true') return false;
+
+            // 6. Skip Promo / Referral
+            if (t.includes('referral') || t.includes('refer a friend') || t.includes('invite') || t.includes('giới thiệu') || t.includes('mời bạn')) return false;
+
+            // 7. Skip Search-requirement cards (need actual Bing searches)
+            if (t.includes('score') && t.includes('searches')) return false;
+            if (t.includes('points for') && t.includes('search')) return false;
+            if (t.includes('search and earn')) return false;
+
+            // 8. Skip Streak / In-progress / Long-term cards
+            if (t.includes('in progress') || t.includes('streak') || t.includes('in a row')) return false;
+            if (t.includes('for 7 days') || t.includes('for 14 days') || t.includes('chuỗi ngày')) return false;
+
+            // 9. Skip Non-quest items (app install, settings, xbox etc.)
+            if (t.includes('bing app') || (t.includes('search engine') && t.includes('default'))) return false;
+            if (t.includes('game pass') || (t.includes('xbox') && !t.includes('quiz'))) return false;
+
+            // 10. Skip invalid links & short text
+            if (!h || h === '#' || h === 'javascript:void(0)') return false;
+            if (t.trim().length < 5) return false;
+
+            // 11. CRITICAL: Skip the "Quests" section entirely (user requested)
+            if (t.includes('tasks') || t.includes('expires in') || t.includes('taskbar')) return false;
+            if (card.closest('[id*="quest"], [class*="quest"], [class*="Quest"]')) return false;
+
+            return true;
+          };
+
           const uncompleted = [];
-          for (const card of allCards) {
-            const cardText = (card.textContent || '').toLowerCase();
-            const href = (card.getAttribute('href') || '').toLowerCase();
-
-            const isCompleted =
-              cardText.includes('completed') ||
-              cardText.includes('hoàn thành') ||
-              card.querySelector('[aria-label*="Completed"]') !== null ||
-              card.querySelector('[aria-label*="completed"]') !== null ||
-              card.getAttribute('data-is-completed') === 'true';
-            if (isCompleted) continue;
-
-            const isPromo =
-              cardText.includes('referral') || cardText.includes('refer') ||
-              cardText.includes('invite') || cardText.includes('giới thiệu') ||
-              cardText.includes('mời bạn') || href.includes('referral') || href.includes('invite');
-            if (isPromo) continue;
-
-            if (!href || href === '#' || href === 'javascript:void(0)') continue;
+          for (const card of cardPool) {
+            if (!checkValid(card)) continue;
 
             card.scrollIntoView({ behavior: 'instant', block: 'center' });
-            const rect = card.getBoundingClientRect();
+            const newRect = card.getBoundingClientRect();
             const titleEl = card.querySelector('.text-globalBody2Strong, [class*="title"], [class*="Title"], h3, h4, strong');
-
             uncompleted.push({
-              x: rect.left + rect.width / 2,
-              y: rect.top + rect.height / 2,
+              x: newRect.left + newRect.width / 2,
+              y: newRect.top + newRect.height / 2,
               title: titleEl ? titleEl.textContent.trim() : ''
             });
           }
-
-          return { cards: uncompleted, totalScanned: allCards.size };
+          return { cards: uncompleted, totalScanned: cardPool.length };
         }
       });
       scanResult = results && results[0] ? results[0].result : null;
     } catch (e) { break; }
 
     if (!scanResult || !scanResult.cards || scanResult.cards.length === 0) {
-      // Try scrolling down to reveal hidden cards
-      if (rounds === 1) {
-        try {
-          await chrome.scripting.executeScript({
-            target: { tabId: tab.id },
-            func: () => { window.scrollTo({ top: document.body.scrollHeight, behavior: 'smooth' }); }
-          });
-          await delay(2000);
-        } catch (e) {}
-        continue; // rescan after scroll
-      }
-      break; // No cards found after scroll → done
+      break;
     }
 
     const cards = scanResult.cards;
-    update({ statusText: `Quest: Found ${cards.length} tasks`, total: cards.length, current: 0 });
+    update({ statusText: `${pageName}: Found ${cards.length} tasks`, total: cards.length, current: 0 });
 
-    // ── STEP 2: Click all cards rapidly, collect opened tabs ──
+    // ── Click all cards rapidly ──
     const openedTabs = [];
-    // Track tabs opened before we start
     const beforeTabs = new Set((await chrome.tabs.query({})).map(t => t.id));
 
     for (let i = 0; i < cards.length; i++) {
       if (shouldStop) break;
-      const card = cards[i];
-      update({ current: i + 1, statusText: `Quest: ${card.title || `Card ${i + 1}/${cards.length}`}` });
+      update({ current: i + 1, statusText: `${pageName}: ${cards[i].title || `Card ${i + 1}/${cards.length}`}` });
 
-      // Need to re-scroll to each card since page may have shifted
+      // Re-scroll to first uncompleted card
       try {
         await chrome.scripting.executeScript({
           target: { tabId: tab.id },
-          func: (idx) => {
-            const selectors = [
-              '#dailyset a[data-react-aria-pressable="true"]',
-              '#moreactivities a[data-react-aria-pressable="true"]',
-              '#more-activities a[data-react-aria-pressable="true"]',
-              'a[data-react-aria-pressable="true"][target="_blank"]'
-            ];
-            const allCards = new Set();
-            for (const sel of selectors) {
-              try { document.querySelectorAll(sel).forEach(c => allCards.add(c)); } catch (e) {}
-            }
-            // Find uncompleted cards again and pick the idx-th one
-            let count = 0;
-            for (const card of allCards) {
-              const cardText = (card.textContent || '').toLowerCase();
-              const href = (card.getAttribute('href') || '').toLowerCase();
-              if (cardText.includes('completed') || cardText.includes('hoàn thành')) continue;
-              if (cardText.includes('referral') || cardText.includes('invite') || cardText.includes('giới thiệu')) continue;
-              if (!href || href === '#') continue;
-              if (card.querySelector('[aria-label*="Completed"]') || card.querySelector('[aria-label*="completed"]')) continue;
-              if (count === idx) {
-                card.scrollIntoView({ behavior: 'instant', block: 'center' });
-                return true;
+          args: [pageName],
+          func: (isEarnPage) => {
+            let cardPool = [];
+            if (isEarnPage === 'Earn') {
+              const headings = Array.from(document.querySelectorAll('h2, h3, [role="heading"], div'));
+              const keepEarningHeading = headings.find(h => (h.textContent || '').toLowerCase().trim().includes('keep earning'));
+              if (keepEarningHeading) {
+                let container = keepEarningHeading.parentElement;
+                for (let level = 0; level < 5 && container; level++) {
+                  const links = container.querySelectorAll('a[data-react-aria-pressable="true"], a[href], [role="button"]');
+                  if (links.length >= 2) { cardPool = Array.from(links); break; }
+                  container = container.parentElement;
+                }
               }
-              count++;
+              if (cardPool.length === 0) cardPool = Array.from(document.querySelectorAll('a[data-react-aria-pressable="true"]'));
+            } else {
+              const selectors = ['#dailyset a', '#moreactivities a', '#more-activities a', '[id*="daily"] a', '[id*="more"] a', 'a[data-react-aria-pressable="true"]', 'div[data-react-aria-pressable="true"]'];
+              const set = new Set();
+              for (const sel of selectors) document.querySelectorAll(sel).forEach(el => set.add(el));
+              cardPool = Array.from(set);
+            }
+
+            const checkValid = (card) => {
+              const t = (card.textContent || '').toLowerCase();
+              const h = (card.getAttribute('href') || '').toLowerCase();
+              const r = card.getBoundingClientRect();
+              if (r.width < 50 || r.height < 30) return false;
+              if (card.getAttribute('role') === 'tab' || card.closest('[role="tablist"], [role="tab"]')) return false;
+              if (card.closest('header, nav, footer, [role="navigation"], [class*="Header"], [class*="header"], [class*="navigation"], [class*="navBar"], [class*="navbar"], [class*="nav_"], [class*="Nav_"]')) return false;
+              if (h.includes('/about') || h.includes('/refer') || h.includes('/redeem') || h.includes('/status') || h.includes('/welcome') || h.includes('/shop') || h.includes('/dashboard') || h.includes('/earn') || h.includes('/dash')) return false;
+              const cleanTxt = t.trim();
+              if (cleanTxt === 'dashboard' || cleanTxt === 'earn' || cleanTxt === 'redeem' || cleanTxt === 'about' || cleanTxt === 'refer and earn' || t.includes('trạng thái') || t.includes('người chiến thắng')) return false;
+              if (t.includes('completed') || t.includes('hoàn thành')) return false;
+              if (card.querySelector('[aria-label*="Completed"]') || card.querySelector('[aria-label*="completed"]')) return false;
+              if (card.getAttribute('data-is-completed') === 'true') return false;
+              if (t.includes('referral') || t.includes('refer a friend') || t.includes('invite') || t.includes('giới thiệu') || t.includes('mời bạn')) return false;
+              if (t.includes('score') && t.includes('searches')) return false;
+              if (t.includes('points for') && t.includes('search')) return false;
+              if (t.includes('search and earn')) return false;
+              if (t.includes('in progress') || t.includes('streak') || t.includes('in a row')) return false;
+              if (t.includes('for 7 days') || t.includes('for 14 days') || t.includes('chuỗi ngày')) return false;
+              if (t.includes('bing app') || (t.includes('search engine') && t.includes('default'))) return false;
+              if (t.includes('game pass') || (t.includes('xbox') && !t.includes('quiz'))) return false;
+              if (!h || h === '#' || h === 'javascript:void(0)') return false;
+              if (t.trim().length < 5) return false;
+              if (t.includes('tasks') || t.includes('expires in') || t.includes('taskbar')) return false;
+              if (card.closest('[id*="quest"], [class*="quest"], [class*="Quest"]')) return false;
+              return true;
+            };
+
+            for (const card of cardPool) {
+              if (!checkValid(card)) continue;
+              card.scrollIntoView({ behavior: 'instant', block: 'center' });
+              return true;
             }
             return false;
-          },
-          args: [0] // Always click the FIRST uncompleted card (they shift as we click)
+          }
         });
       } catch (e) {}
 
-      // Short delay before click
       await delay(randomInt(300, 600));
 
-      // Re-scan position of the first uncompleted card
       let pos;
       try {
         const posResult = await chrome.scripting.executeScript({
           target: { tabId: tab.id },
-          func: () => {
-            const selectors = [
-              '#dailyset a[data-react-aria-pressable="true"]',
-              '#moreactivities a[data-react-aria-pressable="true"]',
-              '#more-activities a[data-react-aria-pressable="true"]',
-              'a[data-react-aria-pressable="true"][target="_blank"]'
-            ];
-            const allCards = new Set();
-            for (const sel of selectors) {
-              try { document.querySelectorAll(sel).forEach(c => allCards.add(c)); } catch (e) {}
+          args: [pageName],
+          func: (isEarnPage) => {
+            let cardPool = [];
+            if (isEarnPage === 'Earn') {
+              const headings = Array.from(document.querySelectorAll('h2, h3, [role="heading"], div'));
+              const keepEarningHeading = headings.find(h => (h.textContent || '').toLowerCase().trim().includes('keep earning'));
+              if (keepEarningHeading) {
+                let container = keepEarningHeading.parentElement;
+                for (let level = 0; level < 5 && container; level++) {
+                  const links = container.querySelectorAll('a[data-react-aria-pressable="true"], a[href], [role="button"]');
+                  if (links.length >= 2) { cardPool = Array.from(links); break; }
+                  container = container.parentElement;
+                }
+              }
+              if (cardPool.length === 0) cardPool = Array.from(document.querySelectorAll('a[data-react-aria-pressable="true"]'));
+            } else {
+              const selectors = ['#dailyset a', '#moreactivities a', '#more-activities a', '[id*="daily"] a', '[id*="more"] a', 'a[data-react-aria-pressable="true"]', 'div[data-react-aria-pressable="true"]'];
+              const set = new Set();
+              for (const sel of selectors) document.querySelectorAll(sel).forEach(el => set.add(el));
+              cardPool = Array.from(set);
             }
-            for (const card of allCards) {
-              const cardText = (card.textContent || '').toLowerCase();
-              const href = (card.getAttribute('href') || '').toLowerCase();
-              if (cardText.includes('completed') || cardText.includes('hoàn thành')) continue;
-              if (cardText.includes('referral') || cardText.includes('invite') || cardText.includes('giới thiệu')) continue;
-              if (!href || href === '#') continue;
-              if (card.querySelector('[aria-label*="Completed"]') || card.querySelector('[aria-label*="completed"]')) continue;
+
+            const checkValid = (card) => {
+              const t = (card.textContent || '').toLowerCase();
+              const h = (card.getAttribute('href') || '').toLowerCase();
+              const r = card.getBoundingClientRect();
+              if (r.width < 50 || r.height < 30) return false;
+              if (card.getAttribute('role') === 'tab' || card.closest('[role="tablist"], [role="tab"]')) return false;
+              if (card.closest('header, nav, footer, [role="navigation"], [class*="Header"], [class*="header"], [class*="navigation"], [class*="navBar"], [class*="navbar"], [class*="nav_"], [class*="Nav_"]')) return false;
+              if (h.includes('/about') || h.includes('/refer') || h.includes('/redeem') || h.includes('/status') || h.includes('/welcome') || h.includes('/shop') || h.includes('/dashboard') || h.includes('/earn') || h.includes('/dash')) return false;
+              const cleanTxt = t.trim();
+              if (cleanTxt === 'dashboard' || cleanTxt === 'earn' || cleanTxt === 'redeem' || cleanTxt === 'about' || cleanTxt === 'refer and earn' || t.includes('trạng thái') || t.includes('người chiến thắng')) return false;
+              if (t.includes('completed') || t.includes('hoàn thành')) return false;
+              if (card.querySelector('[aria-label*="Completed"]') || card.querySelector('[aria-label*="completed"]')) return false;
+              if (card.getAttribute('data-is-completed') === 'true') return false;
+              if (t.includes('referral') || t.includes('refer a friend') || t.includes('invite') || t.includes('giới thiệu') || t.includes('mời bạn')) return false;
+              if (t.includes('score') && t.includes('searches')) return false;
+              if (t.includes('points for') && t.includes('search')) return false;
+              if (t.includes('search and earn')) return false;
+              if (t.includes('in progress') || t.includes('streak') || t.includes('in a row')) return false;
+              if (t.includes('for 7 days') || t.includes('for 14 days') || t.includes('chuỗi ngày')) return false;
+              if (t.includes('bing app') || (t.includes('search engine') && t.includes('default'))) return false;
+              if (t.includes('game pass') || (t.includes('xbox') && !t.includes('quiz'))) return false;
+              if (!h || h === '#' || h === 'javascript:void(0)') return false;
+              if (t.trim().length < 5) return false;
+              if (t.includes('tasks') || t.includes('expires in') || t.includes('taskbar')) return false;
+              if (card.closest('[id*="quest"], [class*="quest"], [class*="Quest"]')) return false;
+              return true;
+            };
+
+            for (const card of cardPool) {
+              if (!checkValid(card)) continue;
               const rect = card.getBoundingClientRect();
               return { x: rect.left + rect.width / 2, y: rect.top + rect.height / 2 };
             }
@@ -562,34 +666,23 @@ async function doQuests() {
         pos = posResult && posResult[0] ? posResult[0].result : null;
       } catch (e) {}
 
-      if (!pos) break; // No more uncompleted cards
+      if (!pos) break;
 
-      // Click via CDP
       await cdpClick(tab.id, pos.x, pos.y);
-
-      // Brief pause to let tab open
       await delay(randomInt(800, 1200));
-
-      // Immediately switch back to rewards tab (don't wait for quest page to load)
       try { await chrome.tabs.update(tab.id, { active: true }); } catch (e) {}
     }
 
-    // ── STEP 3: Collect all newly opened tabs ──
+    // ── Collect & close quest tabs ──
     await delay(1000);
     const afterTabs = await chrome.tabs.query({});
     for (const t of afterTabs) {
-      if (!beforeTabs.has(t.id) && t.id !== tab.id) {
-        openedTabs.push(t.id);
-      }
+      if (!beforeTabs.has(t.id) && t.id !== tab.id) openedTabs.push(t.id);
     }
 
-    // ── STEP 4: Wait for quest tabs to load (they're loading in background) ──
     if (openedTabs.length > 0) {
-      update({ statusText: `Quest: Waiting for ${openedTabs.length} tasks to register...` });
-      // Wait a fixed time for all quest pages to load and register points
+      update({ statusText: `${pageName}: Waiting for ${openedTabs.length} tasks...` });
       await delay(randomInt(4000, 6000));
-
-      // ── STEP 5: Close ALL quest tabs at once ──
       for (const tid of openedTabs) {
         try { await chrome.tabs.remove(tid); } catch (e) {}
       }
@@ -597,12 +690,48 @@ async function doQuests() {
 
     if (shouldStop) break;
 
-    // ── STEP 6: Reload dashboard and rescan ──
-    update({ statusText: 'Quest: Refreshing dashboard...' });
-    await chrome.tabs.update(tab.id, { active: true, url: "https://rewards.bing.com/" });
-    await waitTabReady(tab.id);
-    await delay(2500);
+    // Reload and rescan
+    update({ statusText: `${pageName}: Refreshing...` });
+    try {
+      await chrome.tabs.reload(tab.id);
+      await waitTabReady(tab.id);
+      await delay(2500);
+    } catch (e) { break; }
   }
+}
+
+// Navigate tab to a page, wait for load, scroll to load all content
+async function navigateAndPrepare(tab, url) {
+  await chrome.tabs.update(tab.id, { url, active: true });
+  await waitTabReady(tab.id);
+  await delay(2500);
+}
+
+// Main Quest function: scans BOTH pages sequentially (/dashboard then /earn)
+async function doQuests() {
+  update({ phase: 'quests', statusText: 'Processing Quests...' });
+
+  let tab;
+  try {
+    tab = await chrome.tabs.create({ url: "https://rewards.bing.com/dashboard", active: true });
+    await waitTabReady(tab.id);
+  } catch (e) { return; }
+  if (shouldStop) return;
+
+  // ── PAGE 1: /dashboard → "Quests" section ──
+  addLog('📋 Scanning /dashboard (Quests)...');
+  update({ statusText: 'Quests: Scanning /dashboard...' });
+  await processQuestsOnPage(tab, 'Dashboard');
+  if (shouldStop) { try { await chrome.tabs.remove(tab.id); } catch(e){} return; }
+
+  // ── PAGE 2: /earn → "Keep earning" section ONLY ──
+  addLog('📋 Scanning /earn (Keep Earning section only)...');
+  update({ statusText: 'Quests: Switching to /earn...' });
+  await navigateAndPrepare(tab, "https://rewards.bing.com/earn");
+  await processQuestsOnPage(tab, 'Earn');
+
+  // Close the quest tab when done
+  try { await chrome.tabs.remove(tab.id); } catch (e) {}
 }
 
 // ============================================================
@@ -620,12 +749,16 @@ async function runEngine(action, cfg) {
       await doDesktopSearches(cfg);
     }
     else if (action === 'START_ALL') {
-      // 1. Quests first
+      // Run Search in background WHILE doing Quests (parallel)
+      const searchPromise = doDesktopSearches(cfg);
+
+      // Run Quests on foreground
       await doQuests();
       if (shouldStop) { finish('Stopped', 'stopped'); return; }
 
-      // 2. Desktop Search
-      await doDesktopSearches(cfg);
+      // Wait for search to finish (it may already be done)
+      update({ statusText: 'Waiting for search to finish...' });
+      await searchPromise;
     }
 
     if (shouldStop) {
