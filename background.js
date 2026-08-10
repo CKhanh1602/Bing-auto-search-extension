@@ -535,78 +535,12 @@ async function processQuestsOnPage(tab, pageName) {
       if (shouldStop) break;
       update({ current: i + 1, statusText: `${pageName}: ${cards[i].title || `Card ${i + 1}/${cards.length}`}` });
 
-      // Re-scroll to first uncompleted card
-      try {
-        await chrome.scripting.executeScript({
-          target: { tabId: tab.id },
-          args: [pageName],
-          func: (isEarnPage) => {
-            let cardPool = [];
-            if (isEarnPage === 'Earn') {
-              const headings = Array.from(document.querySelectorAll('h2, h3, [role="heading"], div'));
-              const keepEarningHeading = headings.find(h => (h.textContent || '').toLowerCase().trim().includes('keep earning'));
-              if (keepEarningHeading) {
-                let container = keepEarningHeading.parentElement;
-                for (let level = 0; level < 5 && container; level++) {
-                  const links = container.querySelectorAll('a[data-react-aria-pressable="true"], a[href], [role="button"]');
-                  if (links.length >= 2) { cardPool = Array.from(links); break; }
-                  container = container.parentElement;
-                }
-              }
-              if (cardPool.length === 0) cardPool = Array.from(document.querySelectorAll('a[data-react-aria-pressable="true"]'));
-            } else {
-              const selectors = ['#dailyset a', '#moreactivities a', '#more-activities a', '[id*="daily"] a', '[id*="more"] a', 'a[data-react-aria-pressable="true"]', 'div[data-react-aria-pressable="true"]'];
-              const set = new Set();
-              for (const sel of selectors) document.querySelectorAll(sel).forEach(el => set.add(el));
-              cardPool = Array.from(set);
-            }
-
-            const checkValid = (card) => {
-              const t = (card.textContent || '').toLowerCase();
-              const h = (card.getAttribute('href') || '').toLowerCase();
-              const r = card.getBoundingClientRect();
-              if (r.width < 50 || r.height < 30) return false;
-              if (card.getAttribute('role') === 'tab' || card.closest('[role="tablist"], [role="tab"]')) return false;
-              if (card.closest('header, nav, footer, [role="navigation"], [class*="Header"], [class*="header"], [class*="navigation"], [class*="navBar"], [class*="navbar"], [class*="nav_"], [class*="Nav_"]')) return false;
-              if (h.includes('/about') || h.includes('/refer') || h.includes('/redeem') || h.includes('/status') || h.includes('/welcome') || h.includes('/shop') || h.includes('/dashboard') || h.includes('/earn') || h.includes('/dash')) return false;
-              const cleanTxt = t.trim();
-              if (cleanTxt === 'dashboard' || cleanTxt === 'earn' || cleanTxt === 'redeem' || cleanTxt === 'about' || cleanTxt === 'refer and earn' || t.includes('trạng thái') || t.includes('người chiến thắng')) return false;
-              if (t.includes('completed') || t.includes('hoàn thành')) return false;
-              if (card.querySelector('[aria-label*="Completed"]') || card.querySelector('[aria-label*="completed"]')) return false;
-              if (card.getAttribute('data-is-completed') === 'true') return false;
-              if (t.includes('referral') || t.includes('refer a friend') || t.includes('invite') || t.includes('giới thiệu') || t.includes('mời bạn')) return false;
-              if (t.includes('score') && t.includes('searches')) return false;
-              if (t.includes('points for') && t.includes('search')) return false;
-              if (t.includes('search and earn')) return false;
-              if (t.includes('in progress') || t.includes('streak') || t.includes('in a row')) return false;
-              if (t.includes('for 7 days') || t.includes('for 14 days') || t.includes('chuỗi ngày')) return false;
-              if (t.includes('bing app') || (t.includes('search engine') && t.includes('default'))) return false;
-              if (t.includes('game pass') || (t.includes('xbox') && !t.includes('quiz'))) return false;
-              if (!h || h === '#' || h === 'javascript:void(0)') return false;
-              if (t.trim().length < 5) return false;
-              if (t.includes('tasks') || t.includes('expires in') || t.includes('taskbar')) return false;
-              if (card.closest('[id*="quest"], [class*="quest"], [class*="Quest"]')) return false;
-              return true;
-            };
-
-            for (const card of cardPool) {
-              if (!checkValid(card)) continue;
-              card.scrollIntoView({ behavior: 'instant', block: 'center' });
-              return true;
-            }
-            return false;
-          }
-        });
-      } catch (e) {}
-
-      await delay(randomInt(300, 600));
-
       let pos;
       try {
         const posResult = await chrome.scripting.executeScript({
           target: { tabId: tab.id },
-          args: [pageName],
-          func: (isEarnPage) => {
+          args: [pageName, i],
+          func: (isEarnPage, targetIdx) => {
             let cardPool = [];
             if (isEarnPage === 'Earn') {
               const headings = Array.from(document.querySelectorAll('h2, h3, [role="heading"], div'));
@@ -655,19 +589,21 @@ async function processQuestsOnPage(tab, pageName) {
               return true;
             };
 
-            for (const card of cardPool) {
-              if (!checkValid(card)) continue;
-              const rect = card.getBoundingClientRect();
-              return { x: rect.left + rect.width / 2, y: rect.top + rect.height / 2 };
-            }
-            return null;
+            const validCards = cardPool.filter(checkValid);
+            const targetCard = validCards[targetIdx];
+            if (!targetCard) return null;
+
+            targetCard.scrollIntoView({ behavior: 'instant', block: 'center' });
+            const rect = targetCard.getBoundingClientRect();
+            return { x: rect.left + rect.width / 2, y: rect.top + rect.height / 2 };
           }
         });
         pos = posResult && posResult[0] ? posResult[0].result : null;
       } catch (e) {}
 
-      if (!pos) break;
+      if (!pos) continue;
 
+      await delay(randomInt(200, 400));
       await cdpClick(tab.id, pos.x, pos.y);
       await delay(randomInt(800, 1200));
       try { await chrome.tabs.update(tab.id, { active: true }); } catch (e) {}
@@ -749,16 +685,12 @@ async function runEngine(action, cfg) {
       await doDesktopSearches(cfg);
     }
     else if (action === 'START_ALL') {
-      // Run Search in background WHILE doing Quests (parallel)
-      const searchPromise = doDesktopSearches(cfg);
-
-      // Run Quests on foreground
+      // 1. Run Quests first (shows Quest progress bar)
       await doQuests();
       if (shouldStop) { finish('Stopped', 'stopped'); return; }
 
-      // Wait for search to finish (it may already be done)
-      update({ statusText: 'Waiting for search to finish...' });
-      await searchPromise;
+      // 2. Then run Search (shows Search progress bar 1/30 ... 30/30)
+      await doDesktopSearches(cfg);
     }
 
     if (shouldStop) {
