@@ -15,6 +15,41 @@ let state = {
 let shouldStop = false;
 let isPaused = false;
 let pauseResolver = null;
+const stopWaiters = new Set();
+const STATE_STORAGE_KEY = 'engineState';
+let persistenceQueue = Promise.resolve();
+
+function persistState() {
+  const snapshot = { ...state };
+  persistenceQueue = persistenceQueue.then(() => chrome.storage.local.set({ [STATE_STORAGE_KEY]: snapshot }))
+    .catch(() => addLog('State persistence unavailable'));
+  return persistenceQueue;
+}
+
+// MV3 may terminate a worker at any await. Never replay an interrupted action:
+// the remote page may already have processed it before the worker disappeared.
+const stateReady = chrome.storage.local.get(STATE_STORAGE_KEY).then(async stored => {
+  const saved = stored[STATE_STORAGE_KEY];
+  if (!saved || typeof saved !== 'object') return;
+  if (['idle', 'quests', 'search_desktop', 'complete', 'stopped'].includes(saved.phase)) state.phase = saved.phase;
+  state.current = Number.isSafeInteger(saved.current) && saved.current >= 0 ? saved.current : 0;
+  state.total = Number.isSafeInteger(saved.total) && saved.total >= 0 ? saved.total : 0;
+  const interruptedStatus = 'Run interrupted by service worker restart. Start again to rescan.';
+  const knownStoppedStatuses = [interruptedStatus, 'Stopped', 'Task tab was closed. Start again to rescan.',
+    'Task page timed out. Check your connection and retry.', 'Task failed. Check the Rewards page and retry.'];
+  state.statusText = saved.isRunning ? interruptedStatus
+    : state.phase === 'complete' ? 'Previous run finished. Check Rewards for completion.'
+    : state.phase === 'stopped' ? (knownStoppedStatuses.includes(saved.statusText) ? saved.statusText : 'Previous run stopped. Start again to rescan.') : 'Ready';
+  if (saved.isRunning) state.phase = 'stopped';
+  await persistState();
+}).catch(() => addLog('Stored state unavailable'));
+
+function requestStop() {
+  shouldStop = true;
+  isPaused = false;
+  if (pauseResolver) { pauseResolver(); pauseResolver = null; }
+  for (const cancel of [...stopWaiters]) cancel();
+}
 
 // ============================================================
 // Utilities
@@ -52,7 +87,8 @@ function resetState() {
 }
 
 function broadcast() {
-  chrome.runtime.sendMessage({ action: 'STATUS_UPDATE', state }).catch(() => {});
+  persistState();
+  chrome.runtime.sendMessage({ action: 'STATUS_UPDATE', state: { ...state } }).catch(() => {});
 }
 
 function addLog(text) {
@@ -68,76 +104,32 @@ async function checkPause() {
 }
 
 // ============================================================
-// CDP Helpers
-// ============================================================
-function enableDebugger(tabId) {
-  return new Promise((resolve, reject) => {
-    chrome.debugger.attach({ tabId }, '1.2', () => {
-      if (chrome.runtime.lastError) reject(chrome.runtime.lastError);
-      else resolve(true);
-    });
-  });
-}
-
-function disableDebugger(tabId) {
-  return new Promise((resolve) => {
-    chrome.debugger.detach({ tabId }, () => { resolve(true); });
-  });
-}
-
-function sendCDP(tabId, method, params) {
-  return new Promise((resolve, reject) => {
-    chrome.debugger.sendCommand({ tabId }, method, params, (res) => {
-      if (chrome.runtime.lastError) reject(chrome.runtime.lastError);
-      else resolve(res);
-    });
-  });
-}
-
-// ============================================================
-// CDP Click
-// ============================================================
-async function cdpClick(tabId, x, y) {
-  let weAttached = false;
-  try {
-    await enableDebugger(tabId);
-    weAttached = true;
-  } catch { /* already attached */ }
-
-  try {
-    await sendCDP(tabId, 'Input.dispatchMouseEvent', { type: 'mouseMoved', x: Math.round(x), y: Math.round(y) });
-    await delay(randomInt(80, 200));
-    await sendCDP(tabId, 'Input.dispatchMouseEvent', { type: 'mousePressed', x: Math.round(x), y: Math.round(y), button: 'left', clickCount: 1 });
-    await delay(randomInt(40, 120));
-    await sendCDP(tabId, 'Input.dispatchMouseEvent', { type: 'mouseReleased', x: Math.round(x), y: Math.round(y), button: 'left', clickCount: 1 });
-  } finally {
-    if (weAttached) try { await disableDebugger(tabId); } catch {}
-  }
-}
-
 // ============================================================
 // Tab Helpers
 // ============================================================
-function waitTabReady(tabId) {
-  return new Promise(resolve => {
-    let timeout = setTimeout(() => {
-      chrome.tabs.onUpdated.removeListener(listener);
-      resolve();
-    }, 15000);
-    function listener(tid, info) {
-      if (tid === tabId && info.status === 'complete') {
-        clearTimeout(timeout);
-        chrome.tabs.onUpdated.removeListener(listener);
-        resolve();
-      }
-    }
-    chrome.tabs.onUpdated.addListener(listener);
-    chrome.tabs.get(tabId, t => {
-      if (t && t.status === 'complete') {
-        clearTimeout(timeout);
-        chrome.tabs.onUpdated.removeListener(listener);
-        resolve();
-      }
+function waitTabReady(tabId, timeoutMs = 15000) {
+  return new Promise((resolve, reject) => {
+    let settled = false;
+    const finishWait = error => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timeout);
+      chrome.tabs.onUpdated.removeListener(onUpdated);
+      chrome.tabs.onRemoved.removeListener(onRemoved);
+      stopWaiters.delete(onStop);
+      if (error) reject(new Error(error)); else resolve();
+    };
+    const onUpdated = (id, info) => { if (id === tabId && info.status === 'complete') finishWait(); };
+    const onRemoved = id => { if (id === tabId) finishWait('TAB_CLOSED'); };
+    const onStop = () => finishWait('STOPPED');
+    const timeout = setTimeout(() => finishWait('TAB_TIMEOUT'), timeoutMs);
+    chrome.tabs.onUpdated.addListener(onUpdated);
+    chrome.tabs.onRemoved.addListener(onRemoved);
+    stopWaiters.add(onStop);
+    if (shouldStop) { onStop(); return; }
+    chrome.tabs.get(tabId, tab => {
+      if (chrome.runtime.lastError || !tab) finishWait('TAB_CLOSED');
+      else if (tab.status === 'complete') finishWait();
     });
   });
 }
@@ -365,94 +357,37 @@ async function doDesktopSearches(cfg) {
 }
 
 // ============================================================
-// Quest Engine v4 - 2-Page Parallel Pipeline
-// Page 1: /dashboard → "Quests" section
-// Page 2: /earn      → "Keep earning" section
-// ============================================================// Helper: Process all quest cards on the CURRENT page in tab
-async function processQuestsOnPage(tab, pageName) {
-  let rounds = 0;
-  const MAX_ROUNDS = 3;
-
-  while (rounds < MAX_ROUNDS) {
-    if (shouldStop) break;
-    await checkPause();
-    if (shouldStop) break;
-    rounds++;
-
-    // Step-by-step scroll down and up to force React lazy rendering
-    try {
-      await chrome.scripting.executeScript({
-        target: { tabId: tab.id },
-        func: async () => {
-          const totalHeight = document.body.scrollHeight;
-          let currentPos = 0;
-          while (currentPos < totalHeight) {
-            window.scrollBy(0, 400);
-            currentPos += 400;
-            await new Promise(r => setTimeout(r, 100));
-          }
-          await new Promise(r => setTimeout(r, 500));
-          window.scrollTo({ top: 0, behavior: 'instant' });
-        }
-      });
-      await delay(800);
-    } catch (e) {}
-
-    // ── Scan uncompleted cards ──
-    let scanResult;
-    try {
-      const results = await chrome.scripting.executeScript({
-        target: { tabId: tab.id },
-        args: [pageName],
-        func: (isEarnPage) => {
-          let cardPool = [];
-
-          if (isEarnPage === 'Earn') {
-            // ── EARN PAGE: STRICTLY target ONLY the "Keep Earning" section ──
-            const headings = Array.from(document.querySelectorAll('h2, h3, [role="heading"], div'));
-            const keepEarningHeading = headings.find(h => {
-              const txt = (h.textContent || '').toLowerCase().trim();
-              return txt === 'keep earning' || txt.includes('keep earning');
-            });
-
-            if (keepEarningHeading) {
-              let container = keepEarningHeading.parentElement;
-              for (let level = 0; level < 5 && container; level++) {
-                const links = container.querySelectorAll('a[data-react-aria-pressable="true"], a[href], [role="button"]');
-                if (links.length >= 2) {
-                  cardPool = Array.from(links);
-                  break;
-                }
-                container = container.parentElement;
-              }
-            }
-
-            if (cardPool.length === 0) {
-              cardPool = Array.from(document.querySelectorAll('a[data-react-aria-pressable="true"]'));
-            }
-          } else {
-            // ── DASHBOARD PAGE: Comprehensive card discovery ──
-            const selectors = [
-              '#dailyset a',
-              '#moreactivities a',
-              '#more-activities a',
-              '[id*="daily"] a',
-              '[id*="more"] a',
-              'a[data-react-aria-pressable="true"]',
-              'div[data-react-aria-pressable="true"]',
-              '[class*="card"] a[href]',
-              '[class*="Card"] a[href]'
-            ];
-            const set = new Set();
-            for (const sel of selectors) {
-              document.querySelectorAll(sel).forEach(el => set.add(el));
-            }
-            cardPool = Array.from(set);
-          }
+// Quest Engine: one discovery function for scanning and activation.
+// A card is visited once per run; visiting is not proof of credited points.
+function questCards(isEarnPage, targetKey = null) {
+  const page = new URL(location.href);
+  if (!['rewards.bing.com', 'rewards.microsoft.com'].includes(page.hostname) ||
+      !['/dashboard', '/earn', '/'].includes(page.pathname)) {
+    throw new Error('Quest page unavailable; check sign-in');
+  }
+  const sectionSelectors = isEarnPage === 'Earn'
+    ? '#moreactivities, #more-activities, #keep-earning'
+    : '#dailyset, #daily-set, #moreactivities, #more-activities';
+  const sections = new Set(document.querySelectorAll(sectionSelectors));
+  const labels = isEarnPage === 'Earn' ? ['keep earning', 'tiếp tục kiếm điểm']
+    : ['daily set', 'more activities', 'bộ hàng ngày', 'hoạt động khác'];
+  for (const heading of document.querySelectorAll('h2, h3, [role="heading"]')) {
+    if (!labels.includes((heading.textContent || '').trim().toLowerCase())) continue;
+    let container = heading.parentElement;
+    for (let level = 0; level < 3 && container; level++, container = container.parentElement) {
+      if (['BODY', 'HTML', 'MAIN'].includes(container.tagName)) break;
+      if (container.querySelectorAll('h2, h3, [role="heading"]').length > 1) break;
+      if (container.querySelectorAll('a[href]').length > 0) { sections.add(container); break; }
+    }
+  }
+  const cardPool = [...new Set([...sections].flatMap(section => [...section.querySelectorAll('a[href]')]))];
 
           const checkValid = (card) => {
             const t = (card.textContent || '').toLowerCase();
             const h = (card.getAttribute('href') || '').toLowerCase();
+            let url;
+            try { url = new URL(card.getAttribute('href'), location.href); } catch { return false; }
+            if (url.protocol !== 'https:' || !['www.bing.com', 'bing.com', 'rewards.bing.com', 'rewards.microsoft.com'].includes(url.hostname)) return false;
             const r = card.getBoundingClientRect();
 
             // 1. Skip invisible or tiny elements
@@ -501,173 +436,100 @@ async function processQuestsOnPage(tab, pageName) {
             return true;
           };
 
-          const uncompleted = [];
-          for (const card of cardPool) {
-            if (!checkValid(card)) continue;
 
-            card.scrollIntoView({ behavior: 'instant', block: 'center' });
-            const newRect = card.getBoundingClientRect();
-            const titleEl = card.querySelector('.text-globalBody2Strong, [class*="title"], [class*="Title"], h3, h4, strong');
-            uncompleted.push({
-              x: newRect.left + newRect.width / 2,
-              y: newRect.top + newRect.height / 2,
-              title: titleEl ? titleEl.textContent.trim() : ''
-            });
-          }
-          return { cards: uncompleted, totalScanned: cardPool.length };
-        }
-      });
-      scanResult = results && results[0] ? results[0].result : null;
-    } catch (e) { break; }
-
-    if (!scanResult || !scanResult.cards || scanResult.cards.length === 0) {
-      break;
+  const cards = [];
+  const seen = new Set();
+  for (const card of cardPool) {
+    if (!checkValid(card)) continue;
+    const key = new URL(card.getAttribute('href'), location.href).href;
+    if (seen.has(key)) continue;
+    seen.add(key);
+    if (targetKey === key) {
+      card.click(); // Ordinary DOM activation; never synthesize trusted mouse input.
+      return { activated: true };
     }
+    cards.push({ key });
+  }
+  return { cards, totalScanned: cardPool.length, supported: sections.size > 0, activated: false };
+}
 
-    const cards = scanResult.cards;
-    update({ statusText: `${pageName}: Found ${cards.length} tasks`, total: cards.length, current: 0 });
-
-    // ── Click all cards rapidly ──
-    const openedTabs = [];
-    const beforeTabs = new Set((await chrome.tabs.query({})).map(t => t.id));
-
-    for (let i = 0; i < cards.length; i++) {
-      if (shouldStop) break;
-      update({ current: i + 1, statusText: `${pageName}: ${cards[i].title || `Card ${i + 1}/${cards.length}`}` });
-
-      let pos;
-      try {
-        const posResult = await chrome.scripting.executeScript({
-          target: { tabId: tab.id },
-          args: [pageName, i],
-          func: (isEarnPage, targetIdx) => {
-            let cardPool = [];
-            if (isEarnPage === 'Earn') {
-              const headings = Array.from(document.querySelectorAll('h2, h3, [role="heading"], div'));
-              const keepEarningHeading = headings.find(h => (h.textContent || '').toLowerCase().trim().includes('keep earning'));
-              if (keepEarningHeading) {
-                let container = keepEarningHeading.parentElement;
-                for (let level = 0; level < 5 && container; level++) {
-                  const links = container.querySelectorAll('a[data-react-aria-pressable="true"], a[href], [role="button"]');
-                  if (links.length >= 2) { cardPool = Array.from(links); break; }
-                  container = container.parentElement;
-                }
-              }
-              if (cardPool.length === 0) cardPool = Array.from(document.querySelectorAll('a[data-react-aria-pressable="true"]'));
-            } else {
-              const selectors = ['#dailyset a', '#moreactivities a', '#more-activities a', '[id*="daily"] a', '[id*="more"] a', 'a[data-react-aria-pressable="true"]', 'div[data-react-aria-pressable="true"]'];
-              const set = new Set();
-              for (const sel of selectors) document.querySelectorAll(sel).forEach(el => set.add(el));
-              cardPool = Array.from(set);
-            }
-
-            const checkValid = (card) => {
-              const t = (card.textContent || '').toLowerCase();
-              const h = (card.getAttribute('href') || '').toLowerCase();
-              const r = card.getBoundingClientRect();
-              if (r.width < 50 || r.height < 30) return false;
-              if (card.getAttribute('role') === 'tab' || card.closest('[role="tablist"], [role="tab"]')) return false;
-              if (card.closest('header, nav, footer, [role="navigation"], [class*="Header"], [class*="header"], [class*="navigation"], [class*="navBar"], [class*="navbar"], [class*="nav_"], [class*="Nav_"]')) return false;
-              if (h.includes('/about') || h.includes('/refer') || h.includes('/redeem') || h.includes('/status') || h.includes('/welcome') || h.includes('/shop') || h.includes('/dashboard') || h.includes('/earn') || h.includes('/dash')) return false;
-              const cleanTxt = t.trim();
-              if (cleanTxt === 'dashboard' || cleanTxt === 'earn' || cleanTxt === 'redeem' || cleanTxt === 'about' || cleanTxt === 'refer and earn' || t.includes('trạng thái') || t.includes('người chiến thắng')) return false;
-              if (t.includes('completed') || t.includes('hoàn thành')) return false;
-              if (card.querySelector('[aria-label*="Completed"]') || card.querySelector('[aria-label*="completed"]')) return false;
-              if (card.getAttribute('data-is-completed') === 'true') return false;
-              if (t.includes('referral') || t.includes('refer a friend') || t.includes('invite') || t.includes('giới thiệu') || t.includes('mời bạn')) return false;
-              if (t.includes('score') && t.includes('searches')) return false;
-              if (t.includes('points for') && t.includes('search')) return false;
-              if (t.includes('search and earn')) return false;
-              if (t.includes('in progress') || t.includes('streak') || t.includes('in a row')) return false;
-              if (t.includes('for 7 days') || t.includes('for 14 days') || t.includes('chuỗi ngày')) return false;
-              if (t.includes('bing app') || (t.includes('search engine') && t.includes('default'))) return false;
-              if (t.includes('game pass') || (t.includes('xbox') && !t.includes('quiz'))) return false;
-              if (!h || h === '#' || h === 'javascript:void(0)') return false;
-              if (t.trim().length < 5) return false;
-              if (t.includes('tasks') || t.includes('expires in') || t.includes('taskbar')) return false;
-              if (card.closest('[id*="quest"], [class*="quest"], [class*="Quest"]')) return false;
-              return true;
-            };
-
-            const validCards = cardPool.filter(checkValid);
-            const targetCard = validCards[targetIdx];
-            if (!targetCard) return null;
-
-            targetCard.scrollIntoView({ behavior: 'instant', block: 'center' });
-            const rect = targetCard.getBoundingClientRect();
-            return { x: rect.left + rect.width / 2, y: rect.top + rect.height / 2 };
-          }
-        });
-        pos = posResult && posResult[0] ? posResult[0].result : null;
-      } catch (e) {}
-
-      if (!pos) continue;
-
-      await delay(randomInt(200, 400));
-      await cdpClick(tab.id, pos.x, pos.y);
-      await delay(randomInt(800, 1200));
-      try { await chrome.tabs.update(tab.id, { active: true }); } catch (e) {}
-    }
-
-    // ── Collect & close quest tabs ──
-    await delay(1000);
-    const afterTabs = await chrome.tabs.query({});
-    for (const t of afterTabs) {
-      if (!beforeTabs.has(t.id) && t.id !== tab.id) openedTabs.push(t.id);
-    }
-
-    if (openedTabs.length > 0) {
-      update({ statusText: `${pageName}: Waiting for ${openedTabs.length} tasks...` });
-      await delay(randomInt(4000, 6000));
-      for (const tid of openedTabs) {
-        try { await chrome.tabs.remove(tid); } catch (e) {}
-      }
-    }
-
-    if (shouldStop) break;
-
-    // Reload and rescan
-    update({ statusText: `${pageName}: Refreshing...` });
-    try {
-      await chrome.tabs.reload(tab.id);
-      await waitTabReady(tab.id);
-      await delay(2500);
-    } catch (e) { break; }
+async function questDelay(ms) {
+  for (let elapsed = 0; elapsed < ms && !shouldStop; elapsed += 100) {
+    await checkPause();
+    if (!shouldStop) await delay(Math.min(100, ms - elapsed));
   }
 }
 
-// Navigate tab to a page, wait for load, scroll to load all content
-async function navigateAndPrepare(tab, url) {
-  await chrome.tabs.update(tab.id, { url, active: true });
-  await waitTabReady(tab.id);
-  await delay(2500);
+async function processQuestsOnPage(tab, pageName, visited = new Set()) {
+  const execute = async (key = null) => {
+    const result = await chrome.scripting.executeScript({
+      target: { tabId: tab.id }, func: questCards, args: [pageName, key]
+    });
+    if (!result?.[0]?.result) throw new Error('Quest scan failed');
+    return result[0].result;
+  };
+  let scan;
+  for (let attempt = 0; attempt < 3 && !shouldStop; attempt++) {
+    await checkPause();
+    if (shouldStop) return;
+    scan = await execute();
+    if (scan.supported && scan.totalScanned > 0) break;
+    addLog('Quest: no supported cards; retry ' + (attempt + 1));
+    await questDelay(1000);
+  }
+  if (shouldStop) return;
+  if (!scan || scan.totalScanned === 0) throw new Error('Quest layout/section unavailable; check sign-in or selectors');
+  const cards = scan.cards.filter(card => !visited.has(card.key));
+  update({ total: state.total + cards.length, statusText: pageName + ': ' + cards.length + ' eligible cards' });
+  for (const card of cards) {
+    await checkPause();
+    if (shouldStop) return;
+    // Re-resolve by URL after each DOM update. Never index a shrinking list.
+    const result = await execute(card.key);
+    if (shouldStop) return;
+    visited.add(card.key);
+    if (!result.activated) addLog('Quest: card changed or disappeared; skipped');
+    update({ current: state.current + 1, statusText: pageName + ': card processed; reward not verified' });
+    await questDelay(1000);
+    if (shouldStop) return;
+    // A card may navigate this same tab. Restore the source page before scanning.
+    const currentTab = await chrome.tabs.get(tab.id);
+    const expectedPath = pageName === 'Earn' ? '/earn' : '/dashboard';
+    const currentUrl = new URL(currentTab.url);
+    if (!['rewards.bing.com', 'rewards.microsoft.com'].includes(currentUrl.hostname) || currentUrl.pathname !== expectedPath) {
+      await waitTabReady(tab.id);
+      await questDelay(1000);
+      await navigateAndPrepare(tab, 'https://rewards.bing.com' + expectedPath);
+    }
+  }
 }
 
-// Main Quest function: scans BOTH pages sequentially (/dashboard then /earn)
-async function doQuests() {
-  update({ phase: 'quests', statusText: 'Processing Quests...' });
+async function navigateAndPrepare(tab, url) {
+  await checkPause();
+  if (shouldStop) return;
+  await chrome.tabs.update(tab.id, { url });
+  await waitTabReady(tab.id);
+  await questDelay(1000);
+}
 
+async function doQuests() {
+  update({ phase: 'quests', statusText: 'Processing Quests...', current: 0, total: 0 });
   let tab;
   try {
-    tab = await chrome.tabs.create({ url: "https://rewards.bing.com/dashboard", active: true });
+    await checkPause();
+    if (shouldStop) return;
+    tab = await chrome.tabs.create({ url: 'https://rewards.bing.com/dashboard', active: true });
     await waitTabReady(tab.id);
-  } catch (e) { return; }
-  if (shouldStop) return;
-
-  // ── PAGE 1: /dashboard → "Quests" section ──
-  addLog('📋 Scanning /dashboard (Quests)...');
-  update({ statusText: 'Quests: Scanning /dashboard...' });
-  await processQuestsOnPage(tab, 'Dashboard');
-  if (shouldStop) { try { await chrome.tabs.remove(tab.id); } catch(e){} return; }
-
-  // ── PAGE 2: /earn → "Keep earning" section ONLY ──
-  addLog('📋 Scanning /earn (Keep Earning section only)...');
-  update({ statusText: 'Quests: Switching to /earn...' });
-  await navigateAndPrepare(tab, "https://rewards.bing.com/earn");
-  await processQuestsOnPage(tab, 'Earn');
-
-  // Close the quest tab when done
-  try { await chrome.tabs.remove(tab.id); } catch (e) {}
+    const visited = new Set();
+    await processQuestsOnPage(tab, 'Dashboard', visited);
+    if (shouldStop) return;
+    await navigateAndPrepare(tab, 'https://rewards.bing.com/earn');
+    if (shouldStop) return;
+    await processQuestsOnPage(tab, 'Earn', visited);
+  } finally {
+    // Only the tab created by this run is owned. Leave destination/user tabs open.
+    if (tab) try { await chrome.tabs.remove(tab.id); } catch { /* Already closed. */ }
+  }
 }
 
 // ============================================================
@@ -678,6 +540,8 @@ async function runEngine(action, cfg) {
   resetState();
 
   try {
+    await persistenceQueue;
+    if (shouldStop) { finish('Stopped', 'stopped'); return; }
     if (action === 'START_QUEST') {
       await doQuests();
     }
@@ -696,10 +560,19 @@ async function runEngine(action, cfg) {
     if (shouldStop) {
       finish('Stopped', 'stopped');
     } else {
-      finish('Completed!', 'complete');
+      finish(action === 'START_DESKTOP' ? 'Completed!' : 'Quest scan finished; rewards may require manual completion.', 'complete');
     }
   } catch (e) {
-    finish('Error: ' + e.message, 'stopped');
+    const reasons = {
+      TAB_CLOSED: 'Task tab was closed. Start again to rescan.',
+      TAB_TIMEOUT: 'Task page timed out. Check your connection and retry.',
+      'Quest page unavailable; check sign-in': 'Quest page unavailable; check sign-in.',
+      'Quest layout/section unavailable; check sign-in or selectors': 'Quest layout/section unavailable; check sign-in or selectors.',
+      'Quest scan failed': 'Quest scan failed. Check the Rewards page and retry.',
+      STOPPED: 'Stopped'
+    };
+    finish(shouldStop ? 'Stopped' : reasons[e.message] || 'Task failed. Check the Rewards page and retry.', 'stopped');
+    addLog(shouldStop ? 'Run stopped' : 'Run failed; state saved for inspection');
   }
 }
 
@@ -707,36 +580,34 @@ async function runEngine(action, cfg) {
 // Message Listeners
 // ============================================================
 chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
-  if (msg.action === 'GET_STATUS') {
-    sendResponse(state);
-    return true;
+  if (!msg || !['GET_STATUS', 'STOP', 'PAUSE', 'RESUME', 'START_QUEST', 'START_DESKTOP', 'START_ALL'].includes(msg.action)) return false;
+  if (sender.id !== chrome.runtime.id || sender.tab || sender.url !== chrome.runtime.getURL('popup.html')) {
+    sendResponse({ ok: false, error: 'Unauthorized sender' });
+    return false;
   }
-  if (msg.action === 'STOP') {
-    if (state.isRunning) {
-      shouldStop = true;
-      isPaused = false;
-      if (pauseResolver) { pauseResolver(); pauseResolver = null; }
+  stateReady.then(async () => {
+    if (msg.action === 'GET_STATUS') { sendResponse({ ...state }); return; }
+    if (msg.action.startsWith('START_')) {
+      if (state.isRunning) { sendResponse({ ok: false, error: 'A run is already active', state: { ...state } }); return; }
+      const cfg = msg.config;
+      if (msg.action !== 'START_QUEST' && (!cfg || !Number.isInteger(cfg.desktopSearches) || cfg.desktopSearches < 1 || cfg.desktopSearches > 1000 ||
+        !Number.isFinite(cfg.minDelay) || !Number.isFinite(cfg.maxDelay) || cfg.minDelay < 1 || cfg.maxDelay < cfg.minDelay || cfg.maxDelay > 3600)) {
+        sendResponse({ ok: false, error: 'Invalid search configuration', state: { ...state } }); return;
+      }
+      void runEngine(msg.action, cfg);
+    } else if (msg.action === 'STOP' && state.isRunning) {
+      requestStop();
       update({ statusText: 'Stopping...', isPaused: false });
-    }
-    return true;
-  }
-  if (msg.action === 'PAUSE') {
-    if (state.isRunning && !isPaused) {
+    } else if (msg.action === 'PAUSE' && state.isRunning && !shouldStop) {
       isPaused = true;
       update({ isPaused: true, statusText: 'Paused' });
-    }
-    return true;
-  }
-  if (msg.action === 'RESUME') {
-    if (state.isRunning && isPaused) {
+    } else if (msg.action === 'RESUME' && state.isRunning && !shouldStop) {
       isPaused = false;
       if (pauseResolver) { pauseResolver(); pauseResolver = null; }
       update({ isPaused: false, statusText: 'Resuming...' });
     }
-    return true;
-  }
-  if (['START_QUEST', 'START_DESKTOP', 'START_ALL'].includes(msg.action)) {
-    runEngine(msg.action, msg.config);
-    return true;
-  }
+    await persistenceQueue;
+    sendResponse({ ok: true, state: { ...state } });
+  }).catch(() => sendResponse({ ok: false, error: 'Command failed' }));
+  return true;
 });

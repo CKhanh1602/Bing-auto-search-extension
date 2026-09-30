@@ -228,31 +228,44 @@ document.addEventListener('DOMContentLoaded', () => {
     maxDelay: parseInt(elements.maxDelay.value, 10) || 15
   });
 
+  // Acknowledge controls and expose a disconnected/restarted worker in the UI.
+  const sendCommand = async (message) => {
+    try {
+      const response = await chrome.runtime.sendMessage(message);
+      if (response?.state) updateUI(response.state);
+      if (response?.ok === false) elements.statusText.textContent = response.error;
+    } catch {
+      elements.statusText.textContent = currentLang === 'vi'
+        ? 'Không kết nối được extension. Đóng và mở lại popup.'
+        : 'Extension unavailable. Close and reopen the popup.';
+    }
+  };
+
   // Feature Buttons
   elements.btnQuest.addEventListener('click', () => {
-    chrome.runtime.sendMessage({ action: 'START_QUEST' });
+    sendCommand({ action: 'START_QUEST' });
   });
 
   elements.btnDesktop.addEventListener('click', () => {
-    chrome.runtime.sendMessage({ action: 'START_DESKTOP', config: getConfig() });
+    sendCommand({ action: 'START_DESKTOP', config: getConfig() });
   });
 
   elements.btnAll.addEventListener('click', () => {
-    chrome.runtime.sendMessage({ action: 'START_ALL', config: getConfig() });
+    sendCommand({ action: 'START_ALL', config: getConfig() });
   });
 
   // Control Buttons
   elements.btnPause.addEventListener('click', () => {
     const isCurrentlyPaused = currentState && currentState.isPaused;
     if (isCurrentlyPaused) {
-      chrome.runtime.sendMessage({ action: 'RESUME' });
+      sendCommand({ action: 'RESUME' });
     } else {
-      chrome.runtime.sendMessage({ action: 'PAUSE' });
+      sendCommand({ action: 'PAUSE' });
     }
   });
 
   elements.btnStop.addEventListener('click', () => {
-    chrome.runtime.sendMessage({ action: 'STOP' });
+    sendCommand({ action: 'STOP' });
   });
 
   // UI Update Function
@@ -349,6 +362,10 @@ document.addEventListener('DOMContentLoaded', () => {
   try {
     if (chrome.runtime && chrome.runtime.sendMessage) {
       chrome.runtime.sendMessage({ action: 'GET_STATUS' }, (response) => {
+        if (chrome.runtime.lastError) {
+          elements.statusText.textContent = 'Extension unavailable. Close and reopen the popup.';
+          return;
+        }
         if (response && response.phase !== undefined) {
           updateUI(response);
         }

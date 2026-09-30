@@ -57,8 +57,17 @@ A Chrome/Edge extension that automates daily Microsoft Rewards tasks — Bing se
 1. Opens the Microsoft Rewards dashboard (`rewards.bing.com`)
 2. Scans for uncompleted cards in **Daily Set** and **Keep Earning** sections
 3. Uses multi-strategy detection (ID selectors, heading text, ARIA labels)
-4. Clicks each card via CDP (Chrome DevTools Protocol), waits for completion
-5. Reloads dashboard and repeats until all cards are done
+4. Re-resolves eligible links by URL inside recognized activity sections and activates them once using ordinary DOM clicks
+5. Reports cards processed, not points awarded. Interactive quizzes may require manual completion; destination tabs stay open
+
+The worker saves progress locally. A worker/extension restart explicitly stops an
+interrupted run rather than replaying clicks. Start again to rescan. Missing
+sections, sign-in redirects and loading failures stop the run with an error.
+See [verification evidence](docs/auto-quest-fix.md) and [Edge manual QA](docs/edge-qa.md).
+
+Development checks (Node 22+; no dependency installation needed):
+`npm test` and `npm run check`. This plain JavaScript extension has no bundling,
+TypeScript or ESLint configuration.
 
 ### Search Engine (STAR Bonus Optimized)
 1. Creates a background tab
@@ -72,7 +81,6 @@ A Chrome/Edge extension that automates daily Microsoft Rewards tasks — Bing se
 
 | Permission | Why |
 |-----------|-----|
-| `debugger` | CDP clicks on quest cards (simulates real mouse events) |
 | `activeTab` | Access to current tab |
 | `scripting` | Inject scripts to scan dashboard cards and scroll pages |
 | `storage` | Save user settings (search count, delay, language, theme) |
