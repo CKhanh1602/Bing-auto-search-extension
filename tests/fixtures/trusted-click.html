@@ -1,0 +1,37 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Trusted click probe</title>
+  <style>
+    body { font: 16px/1.5 system-ui, sans-serif; max-width: 42rem; margin: 4rem auto; padding: 0 1rem; }
+    button { font: inherit; margin: .5rem .5rem .5rem 0; padding: .75rem 1rem; }
+    output { display: block; margin-top: 1rem; padding: 1rem; background: #eef3f8; white-space: pre-wrap; }
+  </style>
+</head>
+<body>
+  <h1>Trusted click probe</h1>
+  <p>This fixture compares a JavaScript-generated click with a real browser input click.</p>
+  <button id="target" type="button">Target action</button>
+  <button id="synthetic" type="button">Call element.click()</button>
+  <output id="result">No click observed</output>
+  <script>
+    const target = document.querySelector('#target');
+    const result = document.querySelector('#result');
+    let count = 0;
+
+    target.addEventListener('click', (event) => {
+      count += 1;
+      result.textContent = [
+        `clickCount=${count}`,
+        `isTrusted=${event.isTrusted}`,
+        `detail=${event.detail}`,
+        `pointerType=${event.pointerType || 'none'}`,
+      ].join('\n');
+    });
+
+    document.querySelector('#synthetic').addEventListener('click', () => target.click());
+  </script>
+</body>
+</html>

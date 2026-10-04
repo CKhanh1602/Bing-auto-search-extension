@@ -2,20 +2,21 @@
 <html lang="en">
 <head>
   <meta charset="UTF-8">
-  <link href="https://fonts.googleapis.com/css2?family=Fira+Code:wght@400;500;600;700&family=Fira+Sans:wght@300;400;500;600;700&display=swap" rel="stylesheet">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Bing Search Automator</title>
   <link rel="stylesheet" href="popup.css">
 </head>
-<body>
+<body class="light-theme">
   <div class="container">
     <!-- Header -->
     <header>
       <div class="header-content">
         <div class="logo-box">
-          <img src="icons/icon48.png" width="22" height="22" alt="Logo" style="border-radius: 50%; object-fit: contain;">
+          <img src="icons/icon48.png" width="24" height="24" alt="">
         </div>
-        <h1 class="title">Bing Search Automator</h1>
+        <div class="brand-copy"><span class="eyebrow" id="lblDailyTool">YOUR DAILY TOOL</span><h1 class="title">Bing Search Automator</h1></div>
       </div>
-      <button id="btnSettings" class="btn-icon" title="Settings">
+      <button id="btnSettings" class="btn-icon" title="Settings" aria-label="Settings" aria-expanded="false" aria-controls="settingsPanel">
         <svg xmlns="http://www.w3.org/2000/svg" width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 0 1 0 2.83 2 2 0 0 1-2.83 0l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-2 2 2 2 0 0 1-2-2v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 0 1-2.83 0 2 2 0 0 1 0-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1-2-2 2 2 0 0 1 2-2h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 0 1 0-2.83 2 2 0 0 1 2.83 0l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 2-2 2 2 0 0 1 2 2v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 0 1 2.83 0 2 2 0 0 1 0 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 2 2 2 2 0 0 1-2 2h-.09a1.65 1.65 0 0 0-1.51 1z"/></svg>
       </button>
     </header>
@@ -24,28 +25,32 @@
     <div id="settingsPanel" class="settings-panel card hidden">
       <div class="settings-header">
         <span class="section-title" id="lblSettingsTitle">Settings</span>
-        <button id="btnCloseSettings" class="btn-icon-sm">&times;</button>
+        <button id="btnCloseSettings" class="btn-icon-sm" aria-label="Close settings">&times;</button>
       </div>
       <div class="settings-grid">
         <div class="setting-row">
-          <label id="lblLanguage">Language / Ngôn ngữ</label>
+          <label for="questTimeoutSeconds" id="lblQuestTimeout">Quest wait limit (seconds)</label>
+          <input type="number" id="questTimeoutSeconds" value="10" min="10" max="300" step="1">
+        </div>
+        <div class="setting-row">
+          <label for="selLanguage" id="lblLanguage">Language / Ngôn ngữ</label>
           <select id="selLanguage" class="select-input">
             <option value="en">English</option>
             <option value="vi">Tiếng Việt</option>
           </select>
         </div>
         <div class="setting-row">
-          <label id="lblTheme">Theme / Giao diện</label>
+          <label for="selTheme" id="lblTheme">Theme / Giao diện</label>
           <select id="selTheme" class="select-input">
-            <option value="dark">Dark Theme</option>
             <option value="light">Light Theme</option>
+            <option value="dark">Dark Theme</option>
           </select>
         </div>
       </div>
     </div>
 
-    <!-- Modern Status Section with Pulsing Dot -->
-    <section class="status-section card">
+    <!-- Run status and manual handoff -->
+    <section class="status-section card" aria-label="Automation status">
       <div class="status-top">
         <div class="status-indicator">
           <span id="statusDot" class="status-dot dot-idle"></span>
@@ -56,11 +61,12 @@
         </div>
       </div>
       
-      <div class="status-text-row">
-        <span id="statusText" class="status-text">Waiting for action...</span>
+      <div id="statusTextRow" class="status-text-row">
+        <span id="statusText" class="status-text" role="status" aria-live="polite">Ready when you are.</span>
       </div>
+      <div id="manualQuestNotice" class="manual-quest-notice hidden" role="status" aria-live="polite"></div>
 
-      <div class="progress-container">
+      <div id="progressTrack" class="progress-container" role="progressbar" aria-label="Automation progress" aria-valuemin="0" aria-valuemax="100" aria-valuenow="0">
         <div id="progressBar" class="progress-bar"></div>
       </div>
     </section>
@@ -86,25 +92,22 @@
 
     <!-- Action Buttons -->
     <section class="actions-section">
-      <!-- Tooltip / Hover Description Bar -->
-      <div id="tooltipBar" class="tooltip-bar">Hover over any button for description</div>
-
       <!-- Row 1: 2 feature buttons (Quest, Desktop) -->
       <div class="two-row">
-        <button id="btnQuest" class="btn btn-quest" data-desc-en="Auto click all Daily Set & More Activities cards" data-desc-vi="Tự động click làm tất cả Daily Set & More Activities">
+        <button id="btnQuest" class="btn btn-quest" data-desc-en="Activate pending Daily Set and Earn cards; verify completion with Rewards" data-desc-vi="Bấm thẻ Daily Set và Earn chưa hoàn thành; xác minh kết quả với Rewards">
           <svg xmlns="http://www.w3.org/2000/svg" width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><polyline points="14 2 14 8 20 8"/><line x1="16" y1="13" x2="8" y2="13"/><line x1="16" y1="17" x2="8" y2="17"/></svg>
-          Quest
+          <span id="lblQuestText">Quests</span>
         </button>
-        <button id="btnDesktop" class="btn btn-desktop" data-desc-en="Auto Bing Search — optimized for STAR Bonus" data-desc-vi="Tự động tìm kiếm Bing — tối ưu cho STAR Bonus">
+        <button id="btnDesktop" class="btn btn-desktop" data-desc-en="Run Bing searches with your saved settings" data-desc-vi="Tìm kiếm Bing theo cấu hình đã lưu">
           <svg xmlns="http://www.w3.org/2000/svg" width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="11" cy="11" r="8"/><line x1="21" y1="21" x2="16.65" y2="16.65"/></svg>
-          Search
+          <span id="lblSearchText">Search</span>
         </button>
       </div>
 
       <!-- Row 2: "AUTO ALL" button -->
-      <button id="btnAll" class="btn btn-all" data-desc-en="Run Quest first, then Desktop Search (STAR optimized)" data-desc-vi="Tự động làm Quest trước, sau đó tìm kiếm Desktop (tối ưu STAR)">
+      <button id="btnAll" class="btn btn-all" data-desc-en="Run Daily Set and Earn cards, then searches; keep unconfirmed tasks open" data-desc-vi="Làm thẻ Daily Set và Earn rồi tìm kiếm; giữ mở nhiệm vụ chưa xác nhận">
         <svg xmlns="http://www.w3.org/2000/svg" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polygon points="13 2 3 14 12 14 11 22 21 10 12 10 13 2"/></svg>
-        AUTO ALL
+        <span id="lblAllText">Run all</span>
       </button>
 
       <!-- Row 3: Control buttons -->
@@ -119,6 +122,7 @@
         </button>
       </div>
     </section>
+    <footer class="footer"><span id="lblCredit">Made by</span><a id="githubCredit" href="https://github.com/CKhanh1602" target="_blank" rel="noopener noreferrer" aria-label="CKhanh1602 on GitHub" title="CKhanh1602 on GitHub"><svg aria-hidden="true" viewBox="0 0 24 24" width="16" height="16" fill="currentColor"><path d="M12 .75a11.25 11.25 0 0 0-3.56 21.92c.56.1.77-.24.77-.54v-2.1c-3.13.68-3.79-1.33-3.79-1.33-.51-1.3-1.25-1.65-1.25-1.65-1.02-.7.08-.68.08-.68 1.13.08 1.73 1.16 1.73 1.16 1 1.73 2.63 1.23 3.27.94.1-.73.39-1.23.71-1.51-2.5-.29-5.13-1.25-5.13-5.56 0-1.23.44-2.23 1.16-3.02-.12-.29-.5-1.43.11-2.98 0 0 .95-.3 3.09 1.15a10.72 10.72 0 0 1 5.62 0c2.14-1.45 3.08-1.15 3.08-1.15.62 1.55.23 2.69.12 2.98.72.79 1.15 1.79 1.15 3.02 0 4.32-2.64 5.27-5.15 5.55.4.35.76 1.03.76 2.08v3.1c0 .3.2.65.78.54A11.25 11.25 0 0 0 12 .75Z"/></svg><span>CKhanh1602</span></a></footer>
   </div>
   <script src="popup.js"></script>
 </body>

@@ -1,19 +1,14 @@
 {
   "manifest_version": 3,
   "name": "Bing Search Automator",
-  "version": "2.0.0",
-  "description": "Auto Bing Search (STAR Bonus optimized) + Daily Quests & Activities for Microsoft Rewards",
+  "version": "2.0.1",
+  "description": "Run Bing searches and activate pending Microsoft Rewards cards with completion verification.",
   "permissions": [
-    "debugger",
-    "activeTab",
-    "alarms",
     "scripting",
     "storage",
     "tabs"
   ],
   "host_permissions": [
-    "https://rewards.bing.com/*",
-    "https://rewards.microsoft.com/*",
     "https://www.bing.com/*",
     "https://bing.com/*"
   ],
@@ -32,11 +27,5 @@
     "16": "icons/icon16.png",
     "48": "icons/icon48.png",
     "128": "icons/icon128.png"
-  },
-  "web_accessible_resources": [
-    {
-      "resources": ["data/words.json"],
-      "matches": ["<all_urls>"]
-    }
-  ]
+  }
 }
