@@ -14,8 +14,19 @@ desktop.ini
 
 # Agent/tool files
 .agent/
+.agents/
+.codex/
+.edge-qa-control/
 
 # Build artifacts
+.qa/
+dist/
+coverage/
+.cache/
+*.log
+.env
+.env.*
+!.env.example
 *.crx
 *.pem
 *.zip

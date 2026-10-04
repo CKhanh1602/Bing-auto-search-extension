@@ -1,4 +1,5 @@
 document.addEventListener('DOMContentLoaded', () => {
+  const questTimeoutInput = document.getElementById('questTimeoutSeconds');
   const elements = {
     // Inputs & Config
     desktopSearches: document.getElementById('desktopSearches'),
@@ -18,8 +19,11 @@ document.addEventListener('DOMContentLoaded', () => {
     statusDot: document.getElementById('statusDot'),
     statusBadge: document.getElementById('statusBadge'),
     progressBar: document.getElementById('progressBar'),
+    progressTrack: document.getElementById('progressTrack'),
     progressText: document.getElementById('progressText'),
     statusText: document.getElementById('statusText'),
+    statusTextRow: document.getElementById('statusTextRow'),
+    manualQuestNotice: document.getElementById('manualQuestNotice'),
 
     // Settings & Modal
     btnSettings: document.getElementById('btnSettings'),
@@ -27,7 +31,6 @@ document.addEventListener('DOMContentLoaded', () => {
     btnCloseSettings: document.getElementById('btnCloseSettings'),
     selLanguage: document.getElementById('selLanguage'),
     selTheme: document.getElementById('selTheme'),
-    tooltipBar: document.getElementById('tooltipBar'),
 
     // Labels for i18n
     lblSettingsTitle: document.getElementById('lblSettingsTitle'),
@@ -37,7 +40,11 @@ document.addEventListener('DOMContentLoaded', () => {
     lblDesktopCount: document.getElementById('lblDesktopCount'),
     lblMinDelay: document.getElementById('lblMinDelay'),
     lblMaxDelay: document.getElementById('lblMaxDelay'),
-    lblStarInfo: document.getElementById('lblStarInfo')
+    lblDailyTool: document.getElementById('lblDailyTool'),
+    lblQuestText: document.getElementById('lblQuestText'),
+    lblSearchText: document.getElementById('lblSearchText'),
+    lblAllText: document.getElementById('lblAllText'),
+    lblCredit: document.getElementById('lblCredit')
   };
 
   // Comprehensive i18n Dictionary
@@ -48,10 +55,11 @@ document.addEventListener('DOMContentLoaded', () => {
       themeLabel: 'Theme',
       searchSettingsTitle: 'Search Settings',
       desktopLabel: 'Searches',
-      minDelayLabel: 'Min Delay (s)',
-      maxDelayLabel: 'Max Delay (s)',
-      starInfo: 'STAR Bonus optimized: varied queries, natural timing',
-      defaultTooltip: 'Hover over any button for description',
+      minDelayLabel: 'Min delay (s)',
+      maxDelayLabel: 'Max delay (s)',
+      dailyTool: 'YOUR DAILY TOOL',
+      questText: 'Quests', searchText: 'Search', allText: 'Run all', credit: 'Made by',
+      manualNotice: count => `${count} quest${count === 1 ? '' : 's'} left for you. Opened in tabs; check completion on Rewards.`,
       pauseText: 'Pause',
       resumeText: 'Resume',
       stopText: 'Stop',
@@ -60,21 +68,26 @@ document.addEventListener('DOMContentLoaded', () => {
         'scanning': 'SCANNING',
         'quests': 'QUEST',
         'search_desktop': 'SEARCHING',
+        'needs_action': 'ACTION NEEDED',
         'complete': 'COMPLETED',
         'stopped': 'STOPPED',
         'paused': 'PAUSED'
       },
-      defaultStatusText: 'Ready for action...',
+      defaultStatusText: 'Ready when you are.',
       statusMap: {
-        'Ready': 'Ready for action...',
+        'Ready': 'Ready when you are.',
         'Starting...': 'Starting automation...',
-        'Processing Quests...': 'Processing Daily Quests & Activities...',
-        'Desktop Search...': 'Performing Search (STAR optimized)...',
+        'Processing Quests...': 'Processing Rewards cards...',
+        'Reading Rewards activities...': 'Reading Daily Set and Earn activities...',
+        'Reading daily Rewards activities...': 'Reading daily Rewards activities...',
+        'Desktop Search...': 'Running Bing searches...',
         'Stopping...': 'Stopping automation...',
         'Stopped': 'Automation stopped.',
-        'Completed!': 'All tasks completed successfully!',
+        'Completed!': 'Run finished.',
         'Paused': 'Automation paused.',
-        'Resuming...': 'Resuming automation...'
+        'Resuming...': 'Resuming automation...',
+        'Some Quest activities still need action; their tabs were kept open.': 'Some Quest activities still need action; their tabs were kept open.',
+        'Quest activities confirmed by Rewards.': 'Quest activities confirmed by Rewards.'
       }
     },
     vi: {
@@ -82,11 +95,12 @@ document.addEventListener('DOMContentLoaded', () => {
       languageLabel: 'Ngôn ngữ',
       themeLabel: 'Giao diện',
       searchSettingsTitle: 'Cấu hình tìm kiếm',
-      desktopLabel: 'Số lượt search',
-      minDelayLabel: 'Min Delay (giây)',
-      maxDelayLabel: 'Max Delay (giây)',
-      starInfo: 'Tối ưu STAR Bonus: từ khóa đa dạng, thời gian tự nhiên',
-      defaultTooltip: 'Rê chuột vào nút bất kỳ để xem mô tả',
+      desktopLabel: 'Số lượt tìm',
+      minDelayLabel: 'Chờ tối thiểu (s)',
+      maxDelayLabel: 'Chờ tối đa (s)',
+      dailyTool: 'CÔNG CỤ HẰNG NGÀY',
+      questText: 'Nhiệm vụ', searchText: 'Tìm kiếm', allText: 'Chạy tất cả', credit: 'Tác giả',
+      manualNotice: count => `Còn ${count} quest cần bạn thực hiện. Đã mở các tab; kiểm tra hoàn thành trên Rewards.`,
       pauseText: 'Tạm dừng',
       resumeText: 'Tiếp tục',
       stopText: 'Dừng hẳn',
@@ -95,6 +109,7 @@ document.addEventListener('DOMContentLoaded', () => {
         'scanning': 'ĐANG SCAN',
         'quests': 'QUEST',
         'search_desktop': 'ĐANG SEARCH',
+        'needs_action': 'CẦN THAO TÁC',
         'complete': 'HOÀN THÀNH',
         'stopped': 'ĐÃ DỪNG',
         'paused': 'TẠM DỪNG'
@@ -104,12 +119,17 @@ document.addEventListener('DOMContentLoaded', () => {
         'Ready': 'Sẵn sàng hoạt động...',
         'Starting...': 'Đang bắt đầu...',
         'Processing Quests...': 'Đang tự động làm Quest & Activities...',
-        'Desktop Search...': 'Đang tìm kiếm (tối ưu STAR)...',
+        'Reading daily Rewards activities...': 'Đang đọc nhiệm vụ hằng ngày...',
+        'Reading Rewards activities...': 'Đang đọc nhiệm vụ Daily Set và Earn...',
+        'Desktop Search...': 'Đang tìm kiếm Bing...',
         'Stopping...': 'Đang dừng tiến trình...',
         'Stopped': 'Đã dừng tiến trình.',
-        'Completed!': 'Hoàn thành tất cả nhiệm vụ!',
+        'Completed!': 'Đã hoàn tất lượt chạy.',
         'Paused': 'Đã tạm dừng.',
-        'Resuming...': 'Đang tiếp tục...'
+        'Resuming...': 'Đang tiếp tục...',
+        'Some Quest activities still need action; their tabs were kept open.': 'Một số nhiệm vụ vẫn cần thao tác; các tab tương ứng được giữ mở.',
+        'Quest activities confirmed by Rewards.': 'Rewards đã xác nhận các nhiệm vụ hoàn thành.',
+        'No eligible Quest offers found; check Rewards for credit.': 'Không tìm thấy nhiệm vụ hợp lệ; hãy kiểm tra điểm trên Rewards.'
       }
     }
   };
@@ -128,8 +148,9 @@ document.addEventListener('DOMContentLoaded', () => {
 
   // Apply Language Strings
   const applyLanguage = (lang) => {
-    currentLang = lang;
-    const t = i18n[lang];
+    currentLang = i18n[lang] ? lang : 'en';
+    const t = i18n[currentLang];
+    document.documentElement.lang = currentLang;
 
     elements.lblSettingsTitle.textContent = t.settingsTitle;
     elements.lblLanguage.textContent = t.languageLabel;
@@ -138,11 +159,26 @@ document.addEventListener('DOMContentLoaded', () => {
     elements.lblDesktopCount.textContent = t.desktopLabel;
     elements.lblMinDelay.textContent = t.minDelayLabel;
     elements.lblMaxDelay.textContent = t.maxDelayLabel;
-    elements.tooltipBar.textContent = t.defaultTooltip;
-    elements.lblStopText.textContent = t.stopText;
-    if (elements.lblStarInfo) {
-      elements.lblStarInfo.textContent = t.starInfo;
+    document.getElementById('lblQuestTimeout').textContent = currentLang === 'vi'
+      ? 'Chờ nội dung Quest tối đa (10–300 giây)' : 'Quest wait limit (10–300 seconds)';
+    elements.lblDailyTool.textContent = t.dailyTool;
+    elements.lblQuestText.textContent = t.questText;
+    elements.lblSearchText.textContent = t.searchText;
+    elements.lblAllText.textContent = t.allText;
+    elements.lblCredit.textContent = t.credit;
+    elements.btnSettings.setAttribute('aria-label', t.settingsTitle);
+    elements.btnSettings.title = t.settingsTitle;
+    elements.btnCloseSettings.setAttribute('aria-label', currentLang === 'vi' ? 'Đóng cài đặt' : 'Close settings');
+    elements.progressTrack.setAttribute('aria-label', currentLang === 'vi' ? 'Tiến trình tự động' : 'Automation progress');
+    // Descriptions remain available without reserving a full popup row.
+    for (const btn of [elements.btnQuest, elements.btnDesktop, elements.btnAll, elements.btnPause, elements.btnStop]) {
+      const description = btn.getAttribute(currentLang === 'vi' ? 'data-desc-vi' : 'data-desc-en');
+      if (description) {
+        btn.title = description;
+        btn.setAttribute('aria-description', description);
+      }
     }
+    elements.lblStopText.textContent = t.stopText;
 
     if (currentState) {
       updateUI(currentState);
@@ -150,13 +186,14 @@ document.addEventListener('DOMContentLoaded', () => {
   };
 
   // Load saved config & settings
-  chrome.storage.local.get(['desktopSearches', 'minDelay', 'maxDelay', 'lang', 'theme'], (result) => {
+  chrome.storage.local.get(['desktopSearches', 'minDelay', 'maxDelay', 'questTimeoutSeconds', 'lang', 'theme'], (result) => {
+    questTimeoutInput.value = result.questTimeoutSeconds || 10;
     elements.desktopSearches.value = result.desktopSearches || 30;
     elements.minDelay.value = result.minDelay || 10;
     elements.maxDelay.value = result.maxDelay || 15;
 
-    const lang = result.lang || 'en';
-    const theme = result.theme || 'dark';
+    const lang = i18n[result.lang] ? result.lang : 'en';
+    const theme = result.theme === 'dark' ? 'dark' : 'light';
 
     elements.selLanguage.value = lang;
     elements.selTheme.value = theme;
@@ -173,6 +210,10 @@ document.addEventListener('DOMContentLoaded', () => {
       maxDelay: parseInt(elements.maxDelay.value, 10) || 15
     });
   };
+  questTimeoutInput.addEventListener('change', () => {
+    const value = Number(questTimeoutInput.value);
+    if (Number.isInteger(value) && value >= 10 && value <= 300) chrome.storage.local.set({ questTimeoutSeconds: value });
+  });
 
   [elements.desktopSearches, elements.minDelay, elements.maxDelay].forEach(el => {
     el.addEventListener('change', saveConfig);
@@ -181,10 +222,12 @@ document.addEventListener('DOMContentLoaded', () => {
   // Settings Panel Handlers
   elements.btnSettings.addEventListener('click', () => {
     elements.settingsPanel.classList.toggle('hidden');
+    elements.btnSettings.setAttribute('aria-expanded', String(!elements.settingsPanel.classList.contains('hidden')));
   });
 
   elements.btnCloseSettings.addEventListener('click', () => {
     elements.settingsPanel.classList.add('hidden');
+    elements.btnSettings.setAttribute('aria-expanded', 'false');
   });
 
   elements.selLanguage.addEventListener('change', (e) => {
@@ -199,30 +242,8 @@ document.addEventListener('DOMContentLoaded', () => {
     applyTheme(theme);
   });
 
-  // Hover Tooltips for Buttons
-  const buttonsWithTooltip = [
-    elements.btnQuest, elements.btnDesktop,
-    elements.btnAll, elements.btnPause, elements.btnStop
-  ];
-
-  buttonsWithTooltip.forEach(btn => {
-    if (!btn) return;
-    btn.addEventListener('mouseenter', () => {
-      const descAttr = currentLang === 'vi' ? 'data-desc-vi' : 'data-desc-en';
-      const desc = btn.getAttribute(descAttr);
-      if (desc) {
-        elements.tooltipBar.textContent = desc;
-        elements.tooltipBar.style.color = 'var(--text-main)';
-      }
-    });
-
-    btn.addEventListener('mouseleave', () => {
-      elements.tooltipBar.textContent = i18n[currentLang].defaultTooltip;
-      elements.tooltipBar.style.color = 'var(--tooltip-text)';
-    });
-  });
-
   const getConfig = () => ({
+    questTimeoutSeconds: Number(questTimeoutInput.value),
     desktopSearches: parseInt(elements.desktopSearches.value, 10) || 30,
     minDelay: parseInt(elements.minDelay.value, 10) || 10,
     maxDelay: parseInt(elements.maxDelay.value, 10) || 15
@@ -233,8 +254,12 @@ document.addEventListener('DOMContentLoaded', () => {
     try {
       const response = await chrome.runtime.sendMessage(message);
       if (response?.state) updateUI(response.state);
-      if (response?.ok === false) elements.statusText.textContent = response.error;
+      if (response?.ok === false) {
+        elements.statusTextRow.classList.remove('hidden');
+        elements.statusText.textContent = response.error;
+      }
     } catch {
+      elements.statusTextRow.classList.remove('hidden');
       elements.statusText.textContent = currentLang === 'vi'
         ? 'Không kết nối được extension. Đóng và mở lại popup.'
         : 'Extension unavailable. Close and reopen the popup.';
@@ -243,7 +268,7 @@ document.addEventListener('DOMContentLoaded', () => {
 
   // Feature Buttons
   elements.btnQuest.addEventListener('click', () => {
-    sendCommand({ action: 'START_QUEST' });
+    sendCommand({ action: 'START_QUEST', config: getConfig() });
   });
 
   elements.btnDesktop.addEventListener('click', () => {
@@ -265,7 +290,7 @@ document.addEventListener('DOMContentLoaded', () => {
   });
 
   elements.btnStop.addEventListener('click', () => {
-    sendCommand({ action: 'STOP' });
+    return sendCommand({ action: 'STOP' });
   });
 
   // UI Update Function
@@ -284,6 +309,7 @@ document.addEventListener('DOMContentLoaded', () => {
       'scanning': 'badge-scanning',
       'quests': 'badge-quests',
       'search_desktop': 'badge-search-desktop',
+      'needs_action': 'badge-needs-action',
       'complete': 'badge-complete',
       'stopped': 'badge-stopped',
       'paused': 'badge-paused'
@@ -294,6 +320,7 @@ document.addEventListener('DOMContentLoaded', () => {
       'scanning': 'dot-active',
       'quests': 'dot-quests',
       'search_desktop': 'dot-active',
+      'needs_action': 'dot-needs-action',
       'complete': 'dot-complete',
       'stopped': 'dot-stopped',
       'paused': 'dot-paused'
@@ -306,10 +333,17 @@ document.addEventListener('DOMContentLoaded', () => {
     // Update Progress
     const total = state.total || 0;
     const current = state.current || 0;
-    const percentage = total > 0 ? (current / total) * 100 : 0;
+    const percentage = total > 0 ? Math.min(100, Math.max(0, (current / total) * 100)) : 0;
     
     elements.progressBar.style.width = `${percentage}%`;
+    elements.progressTrack.setAttribute('aria-valuenow', String(Math.round(percentage)));
     elements.progressText.textContent = `${current} / ${total}`;
+    const manualCount = Number.isInteger(state.manualQuestCount) && state.manualQuestCount > 0 ? state.manualQuestCount : 0;
+    elements.manualQuestNotice.classList.toggle('hidden', manualCount === 0);
+    elements.manualQuestNotice.textContent = manualCount ? t.manualNotice(manualCount) : '';
+    // At handoff the notice is the full instruction; avoid repeating it above.
+    // Active runs, stopped runs and command errors still expose status text.
+    elements.statusTextRow.classList.toggle('hidden', state.phase === 'needs_action' && !state.isRunning && manualCount > 0);
     
     // Status text localization
     if (state.statusText) {
@@ -320,6 +354,20 @@ document.addEventListener('DOMContentLoaded', () => {
       if (rawText.startsWith('Quest: ')) {
         localized = currentLang === 'vi' ? rawText.replace('Quest: ', 'Nhiệm vụ: ') : rawText;
       }
+      if (currentLang === 'vi') {
+        const patterns = [
+          [/^(\d+) (?:daily )?activities$/, match => `${match[1]} nhiệm vụ`],
+          [/^Waiting for (?:daily|Quest) card (\d+)\/(\d+)$/, match => `Chờ thẻ nhiệm vụ ${match[1]}/${match[2]}`],
+          [/^Verifying (?:daily|Quest) activity (\d+)\/(\d+)$/, match => `Xác minh nhiệm vụ ${match[1]}/${match[2]}`],
+          [/^(\d+)\/(\d+) (?:daily )?activities confirmed$/, match => `Rewards đã xác nhận ${match[1]}/${match[2]} nhiệm vụ`],
+          [/^(\d+)\/(\d+) confirmed; (\d+) need action$/, match => `Đã xác nhận ${match[1]}/${match[2]}; còn ${match[3]} cần bạn thực hiện`],
+          [/^(\d+) quests need your action; tabs opened\.$/, match => `Còn ${match[1]} quest cần bạn thực hiện; đã mở các tab.`]
+        ];
+        for (const [pattern, format] of patterns) {
+          const match = rawText.match(pattern);
+          if (match) { localized = format(match); break; }
+        }
+      }
       
       elements.statusText.textContent = localized;
     } else {
@@ -328,6 +376,7 @@ document.addEventListener('DOMContentLoaded', () => {
 
     // Toggle Inputs and Feature Buttons
     const isRunning = state.isRunning;
+    questTimeoutInput.disabled = isRunning;
     
     [elements.desktopSearches, elements.minDelay, elements.maxDelay].forEach(el => {
       el.disabled = isRunning;
@@ -363,6 +412,7 @@ document.addEventListener('DOMContentLoaded', () => {
     if (chrome.runtime && chrome.runtime.sendMessage) {
       chrome.runtime.sendMessage({ action: 'GET_STATUS' }, (response) => {
         if (chrome.runtime.lastError) {
+          elements.statusTextRow.classList.remove('hidden');
           elements.statusText.textContent = 'Extension unavailable. Close and reopen the popup.';
           return;
         }
