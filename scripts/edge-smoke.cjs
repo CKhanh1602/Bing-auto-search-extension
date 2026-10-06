@@ -31,6 +31,7 @@ const { chromium } = require(process.env.PLAYWRIGHT_MODULE || 'playwright');
   let fixtureMode = 'single';
   const clickCounts = new Map();
   const clickVariants = new Map();
+  const searchEvents = [];
   const countClick = (id, variant) => {
     clickCounts.set(id, (clickCounts.get(id) || 0) + 1);
     const variants = clickVariants.get(id) || [];
@@ -47,6 +48,11 @@ const { chromium } = require(process.env.PLAYWRIGHT_MODULE || 'playwright');
     </div>`;
   await context.route('https://**/*', async route => {
     const url = new URL(route.request().url());
+    if (url.pathname === '/search' && url.searchParams.get('form') === 'QBRE') {
+      searchEvents.push(await context.serviceWorkers()[0].evaluate(() => ({
+        cardClicked: qaCardClicked, completeResponses: qaCompleteResponses
+      })));
+    }
     if (url.pathname === '/qa-activate') {
       const id = url.searchParams.get('id') || 'qa-offer';
       const variant = url.searchParams.get('variant') || 'base';
@@ -74,9 +80,17 @@ const { chromium } = require(process.env.PLAYWRIGHT_MODULE || 'playwright');
           renderCard({ id: 'qa-earn', title: 'Keep earning tasks', query: 'local-qa-earn', complete: clickCounts.has('qa-earn') }),
           renderCard({ id: 'qa-zero', title: 'No points', query: 'local-qa-zero', points: 0 })
         ].join('');
+      } else if (fixtureMode === 'scope') {
+        cards = [
+          renderCard({id:'qa-offer',title:'QA offer',query:'local-qa-fixture',complete:clickCounts.has('qa-offer')}),
+          renderCard({id:'qa-earn',title:'Keep earning tasks',query:'local-qa-earn',complete:clickCounts.has('qa-earn')})
+        ].join('');
+      } else if (fixtureMode === 'stale-complete') {
+        cards = ['1', '2', '3'].map(id => renderCard({id:'stale-'+id,title:'Stale '+id,
+          query:'stale-'+id,complete:true})).join('');
       } else {
         cards = [
-          renderCard({ id: 'qa-offer-complete', title: 'QA offer', query: 'local-qa-fixture', complete: true }),
+          renderCard({ id: 'qa-offer-complete', title: 'Other completed offer', query: 'other-completed', complete: true }),
           renderCard({ id: 'qa-offer', title: 'QA offer', query: 'local-qa-fixture' })
         ].join('');
       }
@@ -141,6 +155,7 @@ const { chromium } = require(process.env.PLAYWRIGHT_MODULE || 'playwright');
       globalThis.qaCardClicked = false;
       globalThis.qaAnyCardClicked = false;
       globalThis.qaClickedOffers = {};
+      globalThis.qaCompleteResponses = 0;
       globalThis.qaHold = false;
       globalThis.qaMode = 'complete';
       globalThis.qaFetchStarted = false;
@@ -157,6 +172,32 @@ const { chromium } = require(process.env.PLAYWRIGHT_MODULE || 'playwright');
               const error = new Error('aborted'); error.name = 'AbortError'; reject(error);
             }, { once: true });
           });
+        }
+        if (qaMode === 'stale-complete') {
+          return {ok:true,status:200,url:'https://www.bing.com/rewards/panelflyout/getuserinfo',json:async()=>({
+            isRewardsUser:true,userInfo:{activities:null,promotions:['1','2','3'].map(id=>({
+              offerId:'stale-'+id,title:'Stale '+id,pointProgressMax:10,pointProgress:0,complete:false,
+              destinationUrl:'https://www.bing.com/search?q=stale-'+id
+            }))}
+          })};
+        }
+        if (qaMode === 'scope') {
+          const card = (id, title, query, daily, extra = {}) => ({offerId:id,title,
+            destinationUrl:'https://www.bing.com/search?q='+query,
+            pointProgressMax:10,pointProgress:qaClickedOffers[id]?10:0,complete:!!qaClickedOffers[id],
+            ...(daily?{dailySetDate:new Date().toLocaleDateString('en-US')} : {}),...extra});
+          return {ok:true,status:200,url:'https://www.bing.com/rewards/panelflyout/getuserinfo',json:async()=>({
+            isRewardsUser:true,userInfo:{activities:null,promotions:[
+              card('qa-offer','QA offer','local-qa-fixture',true),
+              card('qa-earn','Keep earning tasks','local-qa-earn',false),
+              card('ignored-weekly','Weekly multi-step Quest','ignored-weekly',false,{activityProgressMax:8}),
+              card('ignored-streak','Complete the Daily Set for 7 days in a row','ignored-streak',false,{inProgress:'true'}),
+              {offerId:'ignored-parent',promotionType:'quest',children:[
+                card('ignored-step','Nested step','ignored-step',false),
+                card('qa-offer','QA offer','local-qa-fixture',false)
+              ]}
+            ]},flyoutResult:{dailySetPromotions:{},morePromotions:[card('ignored-step','Nested step','ignored-step',false)]}
+          })};
         }
         if (qaMode === 'mixed') {
           const today = new Date().toLocaleDateString('en-US');
@@ -189,6 +230,7 @@ const { chromium } = require(process.env.PLAYWRIGHT_MODULE || 'playwright');
             ] } }) };
         }
         const complete = qaCardClicked && !qaHold && qaMode === 'complete';
+        if (complete) qaCompleteResponses++;
         return { ok: true, status: 200, url: 'https://www.bing.com/rewards/panelflyout/getuserinfo',
           json: async () => ({ isRewardsUser: true, userInfo: { activities: null, promotions: [
             { name: 'qa-offer', attributes: { offerid: 'qa-offer', type: 'urlreward',
@@ -232,7 +274,7 @@ const { chromium } = require(process.env.PLAYWRIGHT_MODULE || 'playwright');
     await clearFixtureTabs();
 
     await worker.evaluate(() => { qaProbes = 0; qaCardClicked = false; qaHold = true; qaResolve = null; qaIgnoreAbort = true; });
-    await popup.locator('#btnQuest').click();
+    await popup.locator('#btnAll').click();
     await popup.waitForFunction(() => document.querySelector('#statusText').textContent.startsWith('Verifying Quest activity'));
     await popup.locator('#btnStop').click();
     await popup.waitForFunction(() => document.querySelector('#statusText').textContent === 'Automation stopped.');
@@ -248,17 +290,75 @@ const { chromium } = require(process.env.PLAYWRIGHT_MODULE || 'playwright');
     await worker.evaluate(async () => { qaLateResolve?.(); await new Promise(resolve => setTimeout(resolve, 250)); });
     assert.equal(await popup.locator('#statusText').textContent(), 'Quest activities confirmed by Rewards.');
     assert.equal(await popup.locator('#progressText').textContent(), '1 / 1');
+    assert.equal(searchEvents.length, 0, 'Stop during Auto All Quest must suppress Search');
     console.log('PASS: Stop immediately permits a replacement run; late old fetch cannot change new state; popup reload hydrates Stop');
 
-    // Close only the stopped run's fixture tab in this disposable profile.
+    // Exercise the real Auto All transition: even released credit cannot start
+    // Search while paused; once resumed it follows both completion observations.
     await clearFixtureTabs();
+    searchEvents.length = 0;
+    await popup.locator('#desktopSearches').fill('1');
+    await worker.evaluate(() => { qaCardClicked=false;qaCompleteResponses=0;qaHold=true;qaMode='complete';qaResolve=null; });
+    await popup.locator('#btnAll').click();
+    await popup.waitForFunction(() => document.querySelector('#statusText').textContent.startsWith('Verifying Quest activity'));
+    assert.equal(searchEvents.length, 0);
+    await popup.locator('#btnPause').click();
+    await popup.waitForFunction(() => document.querySelector('#statusBadge').textContent === 'PAUSED');
+    await worker.evaluate(() => { qaHold=false;qaResolve?.(); });
+    assert.equal(searchEvents.length, 0, 'Paused Quest must not advance to Search');
+    await popup.locator('#btnPause').click();
+    await popup.waitForFunction(() => document.querySelector('#statusText').textContent === 'Run finished.');
+    assert.equal(searchEvents.length, 1);
+    assert.equal(searchEvents[0].cardClicked, true);
+    assert.ok(searchEvents[0].completeResponses >= 2, 'Search must follow two affirmative credit responses');
+    console.log('PASS: Auto All waits for confirmed Quests and Resume before its first Search navigation; Stop suppresses Search');
+
+    // Pending credit is skipped; Auto All runs Search after the Quest pass.
+    await clearFixtureTabs();
+    searchEvents.length = 0;
     await worker.evaluate(() => { qaProbes = 0; qaCardClicked = false; qaHold = false; qaMode = 'pending'; qaResolve = null; });
-    await popup.locator('#btnQuest').click();
-    await popup.waitForFunction(() => document.querySelector('#statusBadge').textContent === 'ACTION NEEDED');
-    assert.equal(await popup.locator('#progressText').textContent(), '0 / 1');
+    await popup.locator('#btnAll').click();
+    await popup.waitForFunction(() => document.querySelector('#statusBadge').textContent === 'FINISHED');
+    assert.equal(await popup.locator('#progressText').textContent(), '1 / 1');
     assert.equal((await worker.evaluate(() => chrome.tabs.query({ url: 'https://www.bing.com/rewards/panelflyout*' }))).length, 1);
-    assert.match(await popup.locator('#manualQuestNotice').textContent(), /1 quest left for you/);
-    console.log('PASS: primary flyout schema with activities=null; pending server state reaches Action needed, never false completion');
+    assert.match(await popup.locator('#manualQuestNotice').textContent(), /1 activity skipped without confirmed credit/);
+    assert.equal(searchEvents.length, 1);
+    assert.equal(await worker.evaluate(() => state.manualQuestCount),0);
+    await popup.reload();
+    await popup.waitForFunction(() => document.querySelector('#manualQuestNotice').textContent.includes('skipped without confirmed credit'));
+    assert.equal(await popup.locator('#btnAll').isEnabled(), true);
+    console.log('PASS: Auto All skips unconfirmed credit, creates no manual task, then Search; popup reopen preserves skipped notice');
+
+    await clearFixtureTabs();
+    fixtureMode = 'stale-complete';
+    clickCounts.clear();
+    searchEvents.length = 0;
+    const staleLogStart = consoleMessages.length;
+    await worker.evaluate(() => {qaMode='stale-complete';qaCardClicked=false;qaHold=false;});
+    await popup.locator('#btnAll').click();
+    await popup.waitForFunction(() => document.querySelector('#statusBadge').textContent === 'FINISHED');
+    assert.equal(clickCounts.size,0,'Already-completed DOM cards cannot activate despite stale API');
+    assert.equal(searchEvents.length,1);
+    const staleState = await worker.evaluate(() => ({manual:state.manualQuestCount,skipped:state.skippedQuestCount}));
+    assert.deepEqual(staleState,{manual:0,skipped:3});
+    assert.equal((await worker.evaluate(()=>chrome.tabs.query({url:'https://www.bing.com/search?q=stale-*'}))).length,0);
+    assert.equal(consoleMessages.slice(staleLogStart).filter(text=>text.includes('skipped: QUEST_ALREADY_COMPLETE')).length,3);
+    console.log('PASS: three API-pending but DOM-completed cards cause zero clicks/manual tabs and Auto All proceeds to Search');
+
+    await clearFixtureTabs();
+    fixtureMode = 'scope';
+    clickCounts.clear();
+    searchEvents.length = 0;
+    const scopeLogStart = consoleMessages.length;
+    await worker.evaluate(() => { qaCardClicked=false;qaClickedOffers={};qaHold=false;qaMode='scope'; });
+    await popup.locator('#btnAll').click();
+    await popup.waitForFunction(() => document.querySelector('#statusText').textContent === 'Run finished.');
+    assert.deepEqual(Object.fromEntries([...clickCounts.entries()].sort()),{'qa-earn':1,'qa-offer':1});
+    assert.equal(searchEvents.length,1);
+    assert.equal(await worker.evaluate(() => state.manualQuestCount),0);
+    assert.ok(consoleMessages.slice(scopeLogStart).some(text=>text.includes('Quest verification finished: confirmed=2,skipped=0')));
+    assert.equal((await worker.evaluate(async()=>chrome.tabs.query({url:'https://www.bing.com/search?q=ignored-*'}))).length,0);
+    console.log('PASS: Auto All finishes Daily Set and Keep earning then Search; multi-step Quests, seven-day streak and nested aliases create no tasks/tabs/handoff');
 
     await clearFixtureTabs();
     fixtureMode = 'mixed';
@@ -269,9 +369,9 @@ const { chromium } = require(process.env.PLAYWRIGHT_MODULE || 'playwright');
       qaHold = false; qaMode = 'mixed'; qaResolve = null;
     });
     await popup.locator('#btnQuest').click();
-    await popup.waitForFunction(() => document.querySelector('#statusBadge').textContent === 'ACTION NEEDED', null,
+    await popup.waitForFunction(() => document.querySelector('#statusBadge').textContent === 'FINISHED', null,
       { timeout: 60000 });
-    assert.equal(await popup.locator('#progressText').textContent(), '5 / 7');
+    assert.equal(await popup.locator('#progressText').textContent(), '5 / 5');
     assert.deepEqual(Object.fromEntries([...clickCounts.entries()].sort()), {
       'qa-dashboard-quiz': 1, 'qa-earn': 1, 'qa-offer-1': 1, 'qa-offer-2': 1, 'qa-offer-3': 1, 'qa-offer-5': 1
     });
@@ -280,13 +380,14 @@ const { chromium } = require(process.env.PLAYWRIGHT_MODULE || 'playwright');
     assert.equal(clickCounts.has('qa-zero'), false);
     const manualState = await worker.evaluate(async () => ({ state: (await chrome.storage.local.get('engineState')).engineState,
       tabs: await chrome.tabs.query({ url: 'https://www.bing.com/search?q=local-qa-quiz*' }) }));
-    assert.equal(manualState.state.manualQuestCount, 2);
+    assert.equal(manualState.state.manualQuestCount, 0);
+    assert.equal(manualState.state.skippedQuestCount, 2);
     assert.equal(manualState.tabs.length, 1);
-    assert.match(await popup.locator('#manualQuestNotice').textContent(), /2 quests left for you/);
+    assert.match(await popup.locator('#manualQuestNotice').textContent(), /2 activities skipped/);
     await popup.screenshot({ path: path.join(output, 'edge-popup-daily-handoff.png'), animations: 'disabled' });
     assert.equal(await popup.evaluate(() => document.documentElement.scrollWidth > innerWidth), false);
     assert.doesNotMatch(consoleMessages.join('\n'), /Run failed; state saved for inspection/);
-    console.log('PASS: seven-offer run continues past unconfirmed and missing cards, reports 5/7, and clicks each available card once');
+    console.log('PASS: seven-offer run confirms five, removes two skipped from task total, and clicks each available card once');
     console.log('PASS: stable offer 5 uses refreshed title and destination before its strict official-card activation');
     console.log('PASS: dashboard-only Daily Set quiz and undated Earn card are activated once through official handler and verified; zero-point card is skipped');
     console.log('PASS: dashboard-only daily URL card (absent raw promotions) is discovered, activated once and verified complete');

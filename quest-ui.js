@@ -93,6 +93,7 @@ function probeQuestUi(activity, mode, expectedSignature, expiresAt, permitNonce)
   };
 
   const matches = [];
+  let completedMatch = false;
   const diagnostic = {
     cards: 0, visible: 0, pending: 0, urlMatches: 0, titleMatches: 0,
     pointMatches: 0, completed: 0, inprogress: 0, locked: 0
@@ -108,11 +109,12 @@ function probeQuestUi(activity, mode, expectedSignature, expiresAt, permitNonce)
     if (completed) diagnostic.completed++;
     if (inprogress) diagnostic.inprogress++;
     if (locked) diagnostic.locked++;
-    if (completed || inprogress || locked) continue;
+    if (inprogress || locked) continue;
 
     const anchor = card.querySelector('a.block[href]');
     const titleElement = card.querySelector('.promo-title');
-    const pointElement = card.querySelector('.pc:not(.complete):not(.inprogress):not(.locked_point) .point');
+    const pointElement = card.querySelector(completed ? '.pc.complete .point'
+      : '.pc:not(.complete):not(.inprogress):not(.locked_point) .point');
     if (!anchor || typeof anchor.click !== 'function' || !isVisible(anchor) || isDisabled(anchor)) continue;
 
     const actualHref = (() => {
@@ -122,6 +124,12 @@ function probeQuestUi(activity, mode, expectedSignature, expiresAt, permitNonce)
     const title = String(titleElement?.textContent || '').trim().replace(/\s+/g, ' ');
     const points = parsePoints(pointElement);
     if (!actualUrl || !points) continue;
+    if (completed) {
+      if (actualUrl === expectedUrl && (!expectedTitle || title === expectedTitle) && points === activity.points) {
+        completedMatch = true;
+      }
+      continue;
+    }
     diagnostic.pending++;
     if (actualUrl !== expectedUrl) continue;
     diagnostic.urlMatches++;
@@ -133,6 +141,9 @@ function probeQuestUi(activity, mode, expectedSignature, expiresAt, permitNonce)
     matches.push({ anchor, signature: JSON.stringify([actualHref, title, points]) });
   }
 
+  // Page completion is a reason to suppress activation, never proof of new
+  // server credit. Prefer suppression if a stale pending alias also exists.
+  if (completedMatch) return result('QUEST_CARD_COMPLETE');
   if (matches.length === 0) return mode === 'scan'
     ? { status: 'QUEST_CARD_NOT_READY', diagnostic }
     : result('QUEST_CARD_NOT_READY');

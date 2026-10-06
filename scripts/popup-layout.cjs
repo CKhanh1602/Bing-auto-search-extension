@@ -42,15 +42,16 @@ const { chromium } = require(process.env.PLAYWRIGHT_MODULE || 'playwright');
       { name: 'en-light', lang: 'en', theme: 'light', settings: false },
       { name: 'vi-light', lang: 'vi', theme: 'light', settings: false },
       { name: 'vi-light-idle', lang: 'vi', theme: 'light', settings: false, idle: true },
+      { name: 'vi-light-auto-all', lang: 'vi', theme: 'light', settings: false, autoAllSkipped: true },
       { name: 'vi-dark', lang: 'vi', theme: 'dark', settings: false },
       { name: 'vi-dark-settings', lang: 'vi', theme: 'dark', settings: true }
     ]) {
-      await worker.evaluate(async ({ lang, theme, idle }) => {
+      await worker.evaluate(async ({ lang, theme, idle, autoAllSkipped }) => {
         await stateReady;
         await chrome.storage.local.set({ lang, theme });
-        update(idle ? { phase:'idle',isRunning:false,manualQuestCount:0,current:0,total:0,statusText:'Ready' }
-          : { phase: 'needs_action', isRunning: false, manualQuestCount: 1, current: 2, total: 2,
-          statusText: '1 quests need your action; tabs opened.' });
+        update(idle ? { phase:'idle',isRunning:false,manualQuestCount:0,skippedQuestCount:0,current:0,total:0,statusText:'Ready' }
+          : { phase: 'complete', isRunning: false, manualQuestCount: 0, skippedQuestCount: autoAllSkipped ? 3 : 1, current: 2, total: 2,
+          statusText: 'Run finished; some Quest activities were skipped, not credited.' });
         await chrome.action.openPopup();
       }, scenario);
       const targets = (await browserSession.send('Target.getTargets')).targetInfos;

@@ -25,16 +25,17 @@ function harness(activities) {
 const offer = (key, extra = {}) => ({ key, title: key, points: 10,
   url: `https://www.bing.com/search?q=${key}`, daily: true, autoEligible: true, ...extra });
 
-test('explicit unavailable and unclassified offers hand off; an eligible task is verified', async () => {
+test('unavailable and unclassified offers are skipped without opening manual destinations', async () => {
   const w = harness([offer('daily'), offer('disabled', {autoEligible:false}), offer('unclassified', {daily:false})]);
   await w.run('stateReady');
   await w.run('runEngine("START_QUEST")');
   assert.deepEqual(w.clicked, ['daily']);
   assert.equal(w.run('state.current'), 1);
   assert.equal(w.run('state.total'), 1);
-  assert.equal(w.run('state.manualQuestCount'), 2);
+  assert.equal(w.run('state.manualQuestCount'), 0);
+  assert.equal(w.run('state.skippedQuestCount'), 2);
   assert.equal(w.run('state.isRunning'), false);
-  assert.deepEqual(w.created.filter(x => x.url.includes('/search?')).map(x => x.url), [offer('disabled').url, offer('unclassified').url]);
+  assert.deepEqual(w.created.filter(x => x.url.includes('/search?')), []);
 });
 
 test('Earn and quiz cards each activate once and count only after completion verification', async () => {
@@ -54,8 +55,9 @@ test('a quiz click that the server has not confirmed never counts as completed a
   await w.run('runEngine("START_QUEST")');
   assert.deepEqual(w.clicked,['quiz']);
   assert.equal(w.run('state.current'),0);
-  assert.equal(w.run('state.total'),1);
-  assert.equal(w.run('state.manualQuestCount'),1);
+  assert.equal(w.run('state.total'),0);
+  assert.equal(w.run('state.manualQuestCount'),0);
+  assert.equal(w.run('state.skippedQuestCount'),1);
 });
 
 test('duplicate source identities cannot activate the same pending physical card twice in one run', async () => {
@@ -81,25 +83,41 @@ test('different card titles with the same destination are not merged by the acti
   assert.equal(w.run('state.current'),2);
 });
 
-test('missing daily card opens manual destination and still attempts next daily task', async () => {
+test('missing daily card is skipped without manual navigation and next task is attempted', async () => {
   const w = harness([offer('missing'), offer('next')]);
   w.run(`activateQuestCard = async (_tab,item) => { if(item.key==='missing') throw new Error('QUEST_CARD_NOT_READY'); clicked.push(item.key); }`);
   await w.run('stateReady');
   await w.run('runEngine("START_QUEST")');
   assert.deepEqual(w.clicked, ['next']);
   assert.equal(w.run('state.current'), 1);
-  assert.equal(w.run('state.manualQuestCount'), 1);
-  assert.equal(w.created.filter(x => x.url === offer('missing').url).length, 1);
+  assert.equal(w.run('state.manualQuestCount'), 0);
+  assert.equal(w.run('state.skippedQuestCount'), 1);
+  assert.equal(w.created.filter(x => x.url === offer('missing').url).length, 0);
 });
 
-test('manual-only run opens safe tasks, never activates a card, and deduplicates destinations', async () => {
+test('manual-only run opens no tabs and activates no cards', async () => {
   const w = harness([offer('quiz', {autoEligible:false}), offer('quiz-copy', {autoEligible:false,url:offer('quiz').url})]);
   await w.run('stateReady');
   await w.run('runEngine("START_QUEST")');
   assert.deepEqual(w.clicked, []);
-  assert.equal(w.run('state.manualQuestCount'), 2);
-  assert.equal(w.created.length, 1);
-  assert.equal(w.created[0].url, offer('quiz').url);
+  assert.equal(w.run('state.manualQuestCount'), 0);
+  assert.equal(w.run('state.skippedQuestCount'), 2);
+  assert.equal(w.created.length, 0);
+});
+
+test('three stale API offers with no actionable UI finish Quest pass and then Search', async () => {
+  const w = harness([offer('stale-1'), offer('stale-2'), offer('stale-3')]);
+  w.run(`activateQuestCard = async () => { throw new Error('QUEST_CARD_NOT_READY'); };
+    globalThis.steps = []; doDesktopSearches = async () => { steps.push('search'); };`);
+  await w.run('stateReady');
+  await w.run('runEngine("START_ALL")');
+  assert.deepEqual(Array.from(w.run('steps')), ['search']);
+  assert.equal(w.run('state.phase'), 'complete');
+  assert.equal(w.run('state.current'), 0, 'Missing cards are never credited');
+  assert.equal(w.run('state.total'), 0, 'Skipped cards no longer appear as unfinished tasks');
+  assert.equal(w.run('state.manualQuestCount'), 0);
+  assert.equal(w.run('state.skippedQuestCount'), 3);
+  assert.equal(w.created.filter(x => x.url.includes('/search?')).length, 0);
 });
 
 test('completed fallback offer never opens a manual destination or an official task tab', async () => {

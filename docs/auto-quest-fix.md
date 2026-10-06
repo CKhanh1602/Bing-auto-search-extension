@@ -1,5 +1,75 @@
 # Auto Quest repair evidence
 
+Current release: **2.1.0**, scanner `auto-only-v19`. The 2.0.2–2.0.4 sections
+below describe intermediate changes included in this release. See
+[release notes](../CHANGELOG.md).
+
+## Automatic-only pass 2.0.4 — 2026-10-06
+
+Current scanner: `auto-only-v19`. Manual handoff is removed. Unavailable,
+missing and unconfirmed cards are skipped, removed from the task total, and
+reported separately; their destinations are not opened as manual tasks.
+Auto All awaits the entire automatic Quest pass then starts Search, including
+when activities were skipped. Pause, Stop and terminal failures still stop
+advancement. Old persisted `needs_action` state and manual counts are retired
+on reload. The popup says the run finished, without claiming skipped credit.
+
+The reported v18 trace proves an API/UI disagreement (three API-eligible cards,
+zero pending UI cards) followed by manual promotion and Search suppression. It
+does not identify those account records. Regressions reproduce completed/pending
+API aliases and stale pending API records whose matching DOM cards are completed.
+Planning now suppresses identities with completion in either current source,
+including completed IDs that have lost their URL. The DOM probe suppresses
+completed matches before activation. Credit verification still refuses
+contradictory pending evidence; skip is never a fabricated completion.
+
+See [RED/GREEN evidence](auto-only-pass.tdd.md). Sections below retain historical
+behavior and evidence; v18's manual handoff and Search gate are superseded.
+
+## Daily Set + Keep earning scope 2.0.3 — 2026-10-06
+
+The user clarified the scope: keep Daily Set and Keep earning, exclude the
+multi-step Quests section on Earn. Their supplied HTML also identifies a
+seven-day Daily Set goal in progress, which is not a single daily activity.
+Previously, all raw Earn promotions were flattened into candidates, including
+multi-step parents, ongoing goals and nested steps; these could become manual
+handoffs that blocked the subsequent Search phase.
+
+The scanner is now `daily-keep-v18`. Scope filtering excludes typed Quest/punch
+cards, search-streak records, non-daily activity counts above one and non-daily
+`inProgress` flags. Nested excluded groups are pruned, and their stable IDs
+cannot reappear as rendered aliases. Daily Set quizzes and single-card Keep
+earning remain eligible. Titles and URL wording are not used to classify scope.
+Excluded records are removed before automatic/manual partitioning, so they do
+not open tabs, increase totals, request user action or claim completion.
+
+Seven scope regressions cover raw/fallback/combined data, nested aliases, ongoing
+seven-day goals and preservation of daily/Keep cards. A Daily Set card referenced
+by an excluded goal remains an independent task; scope filtering never hides
+conflicting server evidence during credit verification. RED failures reproduced
+the unwanted tasks before the fixes. In the real unpacked Edge fixture, two
+in-scope cards confirm, ignored goals create no tabs or handoff, then one Search
+runs and Auto All completes. This does not establish authenticated account
+credit or prove every future dashboard schema. Supplied HTML identifies the
+kind of goal to ignore, not its signed-in API record; the new mappings are tested
+with synthetic metadata. See [scope evidence](daily-keep-scope.tdd.md).
+
+## Sequential Run all 2.0.2 — 2026-10-05
+
+Run all previously awaited the Quest function but still started Search after
+that function handed off unfinished offers. It now requires no outstanding
+manual offers and fully confirmed Quest progress before entering Search. It
+also checks Pause/Stop at the phase boundary. A handoff retains Quest progress
+and ends the run with a bilingual explanation that Search has not started.
+Finish those offers on Rewards and click Run all again to rescan; completed
+cards remain excluded. No background handoff monitoring was added.
+
+Four regression failures reproduced the early Search and missing explanation
+before the fix. The full suite now passes 132/132. Actual Edge fixture testing
+verifies both the successful sequence and zero Search navigations on handoff or
+Stop. Six native popup scenarios pass. See [TDD evidence](auto-all-order.tdd.md)
+for commands, scope and coverage limitations.
+
 ## Release review 2.0.1 — 2026-10-04
 
 Two independent reviewers examined Quest replay protection and repository release

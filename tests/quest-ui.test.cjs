@@ -53,6 +53,7 @@ function fakeCard(options = {}) {
       if (selector === '.promo-title') return title;
       if (selector === '.locked_overlay') return options.lockedOverlay ? fakeElement() : null;
       if (selector === '.pc.complete') return options.complete ? fakeElement() : null;
+      if (selector === '.pc.complete .point') return options.complete ? point : null;
       if (selector === '.pc.inprogress') return options.inprogress ? fakeElement() : null;
       if (selector === '.pc.locked_point') return options.lockedPoint ? fakeElement() : null;
       if (selector === '.pc:not(.complete):not(.inprogress):not(.locked_point) .point') {
@@ -120,7 +121,7 @@ test('probe runs only on the exact secure Bing flyout page', () => {
   }
 });
 
-test('completed duplicate is ignored and only the matching pending card is activated', () => {
+test('completed card evidence suppresses stale pending duplicate without any click', () => {
   const href = 'https://www.bing.com/search?q=shared&FORM=reward';
   const complete = fakeCard({ href, title: 'Shared offer', points: 10, complete: true });
   const pending = fakeCard({ href, title: 'Shared offer', points: 10 });
@@ -128,10 +129,21 @@ test('completed duplicate is ignored and only the matching pending card is activ
   const activity = { url: href, title: 'Shared offer', points: 10 };
   const scan = context.probeQuestUi(activity, 'scan');
 
-  assert.equal(scan.status, 'QUEST_CARD_READY');
-  assert.equal(context.probeQuestUi(activity, 'activate', scan.signature).status, 'QUEST_CARD_ACTIVATED');
+  assert.equal(scan.status, 'QUEST_CARD_COMPLETE');
+  assert.equal(context.probeQuestUi(activity, 'activate', scan.signature).status, 'QUEST_CARD_COMPLETE');
   assert.equal(complete.clickState.count, 0);
-  assert.equal(pending.clickState.count, 1);
+  assert.equal(pending.clickState.count, 0);
+});
+
+test('completed exact card returns immediately but unrelated completed cards do not imply credit', () => {
+  const activity = { url: 'https://www.bing.com/search?q=done', title: 'Done', points: 10 };
+  const card = fakeCard({ href: activity.url, title: activity.title, points: 10, complete: true });
+  assert.equal(loadProbe([card]).probeQuestUi(activity, 'scan').status, 'QUEST_CARD_COMPLETE');
+  assert.equal(card.clickState.count, 0);
+  for (const changed of [{ ...activity, title: 'Other' }, { ...activity, points: 5 },
+    { ...activity, url: 'https://www.bing.com/search?q=other' }]) {
+    assert.equal(loadProbe([card]).probeQuestUi(changed, 'scan').status, 'QUEST_CARD_NOT_READY');
+  }
 });
 
 test('zero or missing point controls and non-pending card states are ignored', () => {
@@ -334,9 +346,7 @@ test('missing scan diagnostics distinguish URL, title and completed-state drift 
     href: activity.url, title: activity.title, points: activity.points, complete: true
   })]).probeQuestUi(activity, 'scan');
   assert.deepEqual(JSON.parse(JSON.stringify(completed)), {
-    status: 'QUEST_CARD_NOT_READY',
-    diagnostic: { cards: 1, visible: 1, pending: 0, urlMatches: 0, titleMatches: 0,
-      pointMatches: 0, completed: 1, inprogress: 0, locked: 0 }
+    status: 'QUEST_CARD_COMPLETE'
   });
 
   for (const probe of [wrongUrl, changedTitle, completed]) {

@@ -9,6 +9,24 @@ function loadApi() {
   return context;
 }
 
+test('planning suppresses stale pending aliases of completed offers without fabricating credit', () => {
+  const api = loadApi();
+  const pending = { offerId: 'already-done', title: 'Done card', pointProgressMax: 10,
+    pointProgress: 0, complete: false, destinationUrl: 'https://www.bing.com/search?q=done' };
+  for (const complete of [{ ...pending, complete: 'true' }, { ...pending, pointProgress: 10 }]) {
+    const payload = { isRewardsUser: true, userInfo: { activities: null, promotions: [pending] },
+      flyoutResult: { dailySetPromotions: {}, morePromotions: [complete] } };
+    assert.equal(api.extractQuestActivities(payload, new Date(), true).length, 0);
+    assert.equal(api.questActivityServerState(payload, pending.offerId), 'pending',
+      'Conflicting API evidence suppresses replay but cannot count as verified credit');
+  }
+  const payload = { dashboard: { dailySetPromotions: {}, morePromotions: [pending, { ...pending, complete: true }] } };
+  assert.equal(api.extractQuestActivities(payload, new Date(), true).length, 0);
+  payload.dashboard.morePromotions[1] = { offerId: pending.offerId, complete: true };
+  assert.equal(api.extractQuestActivities(payload, new Date(), true).length, 0,
+    'A completed stable ID can suppress replay even after its destination is removed');
+});
+
 test('dashboard API activities keep only current, incomplete, positive Bing rewards', () => {
   const api = loadApi();
   const shared = 'https://www.bing.com/search?q=sporting+events';
@@ -383,16 +401,15 @@ test('Quest reuses official flyout and counts only server-confirmed credit', asy
   vm.runInContext('loadQuestActivities = async () => activities.map(item => ({daily:true,autoEligible:true,...item}))', worker.context);
   vm.runInContext('waitForQuestCredit = async key => key === "one"', worker.context);
   const needsAction = await vm.runInContext('doQuests()', worker.context);
-  assert.equal(needsAction, true);
+  assert.equal(needsAction, false);
   assert.equal(JSON.stringify(worker.opened), JSON.stringify([
-    { url: 'https://www.bing.com/rewards/panelflyout?channel=BingFlyout&partnerId=BingRewards', active: true },
-    { url: 'https://bing.com/search?q=two&form=reward', active: false }
+    { url: 'https://www.bing.com/rewards/panelflyout?channel=BingFlyout&partnerId=BingRewards', active: true }
   ]));
   assert.equal(worker.updated.length, 1);
   assert.deepEqual(worker.removed, []);
   assert.equal(worker.state.current, 1);
-  assert.equal(worker.state.total, 2);
-  assert.match(worker.state.statusText, /1.*2|unverified/i);
+  assert.equal(worker.state.total, 1);
+  assert.match(worker.state.statusText, /1 confirmed; 1 skipped/i);
 });
 
 test('a missing fourth card does not abort the fifth or discard two confirmed activities', async () => {
@@ -405,11 +422,11 @@ test('a missing fourth card does not abort the fifth or discard two confirmed ac
   };
   vm.runInContext(`loadQuestActivities = async () => activities.map(item => ({daily:true,autoEligible:true,...item}));
     waitForQuestCredit = async key => ['one','two','five'].includes(key);`, worker.context);
-  assert.equal(await vm.runInContext('doQuests()', worker.context), true);
+  assert.equal(await vm.runInContext('doQuests()', worker.context), false);
   assert.deepEqual(attempts, ['one','two','three','four','five']);
   assert.equal(worker.state.current, 3);
-  assert.equal(worker.state.total, 5);
-  assert.match(worker.logs.join('\n'), /confirmed=3,manual=2/);
+  assert.equal(worker.state.total, 3);
+  assert.match(worker.logs.join('\n'), /confirmed=3,skipped=2/);
   assert.equal(worker.tabRemovedListeners.size, 0);
 });
 
@@ -441,7 +458,7 @@ test('freshly completed or missing offers are never clicked or replaced by anoth
     worker.context.activateQuestCard = async () => { clicks++; };
     worker.context.waitForQuestCredit = async () => { confirmations++; return true; };
     vm.runInContext('loadQuestActivities = async () => activities.map(item => ({daily:true,autoEligible:true,...item})); fetchQuestDashboard = async () => payload', worker.context);
-    assert.equal(await vm.runInContext('doQuests()', worker.context), !complete);
+    assert.equal(await vm.runInContext('doQuests()', worker.context), false);
     assert.equal(clicks, 0);
     assert.equal(confirmations, complete?1:0);
     assert.equal(worker.state.current, complete?1:0);
@@ -490,11 +507,11 @@ test('unverified destination stays open and is never reported as completed', asy
   ];
   vm.runInContext('loadQuestActivities = async () => activities.map(item => ({daily:true,autoEligible:true,...item})); waitForQuestCredit = async () => false', worker.context);
   const needsAction = await vm.runInContext('doQuests()', worker.context);
-  assert.equal(needsAction, true);
+  assert.equal(needsAction, false);
   assert.equal(worker.state.current, 0);
-  assert.equal(worker.state.total, 1);
+  assert.equal(worker.state.total, 0);
   assert.deepEqual(worker.removed, []);
-  assert.match(worker.logs.join('\n'), /not confirmed/i);
+  assert.match(worker.logs.join('\n'), /skipped: QUEST_CREDIT_UNCONFIRMED/);
 });
 
 test('credit verification requires two consecutive affirmative completion observations', async () => {
@@ -857,7 +874,7 @@ test('Pause gate prevents activity navigation until Resume releases it', async (
   assert.equal(worker.state.current, 0);
   resume();
   await run;
-  assert.equal(worker.opened.length, 2);
-  assert.equal(new URL(worker.opened[1].url).pathname, '/search');
+  assert.equal(worker.opened.length, 1);
+  assert.equal(new URL(worker.opened[0].url).pathname, '/rewards/panelflyout');
   assert.equal(worker.state.current, 0);
 });

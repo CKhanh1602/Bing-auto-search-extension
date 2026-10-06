@@ -60,20 +60,61 @@ function describeQuestDashboard(payload) {
     `daily=${questValueType(dashboard?.dailySetPromotions)},more=${questValueType(dashboard?.morePromotions)}`;
 }
 
-function collectQuestItems(value, output, depth = 0) {
+// Earn's multi-step Quests are a different group from one-card Keep earning
+// activities. Ignore their whole subtree so steps cannot become standalone
+// offers when nested promotion data is flattened. Daily Set quiz metadata is
+// deliberately preserved; titles and destination wording are not classifiers.
+function isExcludedEarnQuest(item, attributes = item?.attributes || {}, dailyContext = false) {
+  if (!item || typeof item !== 'object') return false;
+  const questKinds = new Set(['quest', 'questcard', 'punchcard', 'multistepquest', 'searchstreak']);
+  const kinds = [item.promotionType, attributes.promotionType, attributes.type]
+    .filter(value => typeof value === 'string')
+    .map(value => value.toLowerCase().replace(/[^a-z0-9]/g, ''));
+  if (kinds.some(kind => questKinds.has(kind))) return true;
+  const daily = dailyContext || Boolean(item.dailySetDate || attributes.daily_set_date);
+  if (!daily && (truthyQuestFlag(item.inProgress) || truthyQuestFlag(attributes.inProgress))) return true;
+  const steps = finiteQuestNumber(item.activityProgressMax, attributes.activityProgressMax);
+  return !daily && Number.isFinite(steps) && steps > 1;
+}
+
+function excludedEarnQuestIds(payload) {
+  const excluded = new Set();
+  let visited = 0;
+  const visit = (value, insideExcluded = false, depth = 0) => {
+    if (!value || typeof value !== 'object' || depth > 10 || visited++ >= 5000) return;
+    if (Array.isArray(value)) { for (const child of value) visit(child, insideExcluded, depth + 1); return; }
+    const attributes = value.attributes && typeof value.attributes === 'object' ? value.attributes : {};
+    const skip = insideExcluded || isExcludedEarnQuest(value, attributes);
+    const id = questItemStableIdentity(value, attributes);
+    if (skip && id) excluded.add(id);
+    for (const [key, child] of Object.entries(value)) {
+      if (key !== 'attributes') visit(child, skip, depth + 1);
+    }
+  };
+  const flyout = questFlyout(payload);
+  const dashboard = questDashboard(payload);
+  // Daily Set is a separate source. Inspect only Earn groups and propagate
+  // exclusions by stable identity, never by title or shared destination URL.
+  visit(flyout?.promotions);
+  visit(dashboard?.morePromotions);
+  return excluded;
+}
+
+function collectQuestItems(value, output, depth = 0, dailyContext = false, applyScope = true) {
   if (!value || depth > 8 || output.length >= 500) return;
   if (Array.isArray(value)) {
-    for (const item of value) collectQuestItems(item, output, depth + 1);
+    for (const item of value) collectQuestItems(item, output, depth + 1, dailyContext, applyScope);
     return;
   }
   if (typeof value !== 'object') return;
   const attributes = value.attributes && typeof value.attributes === 'object' ? value.attributes : {};
+  if (applyScope && isExcludedEarnQuest(value, attributes, dailyContext)) return;
   const destination = value.destinationUrl || value.destination || attributes.destinationUrl || attributes.destination;
   if (typeof destination === 'string' || questItemStableIdentity(value, attributes)) {
     output.push(value);
   }
   for (const [key, nested] of Object.entries(value)) {
-    if (key !== 'attributes') collectQuestItems(nested, output, depth + 1);
+    if (key !== 'attributes') collectQuestItems(nested, output, depth + 1, dailyContext, applyScope);
   }
 }
 
@@ -134,6 +175,18 @@ function currentQuestDate(value, dateKeys) {
     /^\d{4}-\d{2}-\d{2}$/.test(date) && String(value).startsWith(date + 'T'));
 }
 
+function completedQuestIds(candidates, dateKeys) {
+  const ids = new Set();
+  for (const { item, date } of candidates) {
+    if (!item || typeof item !== 'object') continue;
+    const attributes = item.attributes && typeof item.attributes === 'object' ? item.attributes : {};
+    if (!currentQuestDate(date || attributes.daily_set_date || item.dailySetDate, dateKeys)) continue;
+    const id = questItemStableIdentity(item, attributes);
+    if (id && questItemServerState(item) === 'complete') ids.add(id);
+  }
+  return ids;
+}
+
 function appendQuestActivity(activities, seen, conflicts, activity, includeUi) {
   const previous = seen.get(activity.key);
   if (previous) {
@@ -180,9 +233,10 @@ function partitionQuestActivities(activities) {
 function extractFlyoutActivities(payload, now, includeUi = false) {
   const flyout = questFlyout(payload);
   if (!flyout) return [];
+  const excludedIds = excludedEarnQuestIds(payload);
   const candidates = [];
   const dailyCandidates = [];
-  collectQuestItems(flyout.activities, dailyCandidates);
+  collectQuestItems(flyout.activities, dailyCandidates, 0, true);
   candidates.push(...dailyCandidates.map(item => ({ item, defaultSection: 'Dashboard', source: 'flyout' })));
   const promotionCandidates = [];
   collectQuestItems(flyout.promotions, promotionCandidates);
@@ -207,20 +261,23 @@ function extractFlyoutActivities(payload, now, includeUi = false) {
   const activities = [];
   const seen = new Map();
   const conflicts = new Set();
+  const completed = completedQuestIds(candidates, dateKeys);
   for (const { item, defaultSection, date, source } of candidates) {
     if (!item || typeof item !== 'object') continue;
     const attributes = item.attributes && typeof item.attributes === 'object' ? item.attributes : {};
-    if (truthyQuestFlag(item.complete) || truthyQuestFlag(attributes.complete) ||
-        truthyQuestFlag(item.hidden) || truthyQuestFlag(attributes.hidden) ||
+    const dailyDate = date || attributes.daily_set_date || item.dailySetDate;
+    const dailyContext = Boolean(dailyDate) || defaultSection === 'Dashboard';
+    if (!dailyContext && excludedIds.has(questItemStableIdentity(item, attributes))) continue;
+    if (isExcludedEarnQuest(item, attributes, Boolean(date) || defaultSection === 'Dashboard')) continue;
+    if (truthyQuestFlag(item.hidden) || truthyQuestFlag(attributes.hidden) ||
         truthyQuestFlag(item.isHidden) || truthyQuestFlag(attributes.isHidden) ||
         truthyQuestFlag(item.isTestOnly) || truthyQuestFlag(attributes.isTestOnly)) continue;
-    const dailyDate = date || attributes.daily_set_date || item.dailySetDate;
     if (!currentQuestDate(dailyDate, dateKeys)) continue;
     const points = finiteQuestNumber(item.pointProgressMax, attributes.pointProgressMax,
       attributes.max, item.max, attributes.points, item.points);
     const progress = finiteQuestNumber(item.pointProgress, attributes.pointProgress,
       attributes.progress, item.progress, attributes.activityprogress, 0);
-    if (!Number.isFinite(points) || points <= 0 || progress >= points) continue;
+    if (!Number.isFinite(points) || points <= 0) continue;
     const destination = item.destinationUrl || item.destination || attributes.destinationUrl || attributes.destination;
     if (typeof destination !== 'string' || !destination.trim()) continue;
     let url;
@@ -230,17 +287,22 @@ function extractFlyoutActivities(payload, now, includeUi = false) {
     const section = dailyDate ? 'Dashboard' : defaultSection;
     const identity = questItemIdentity(item, attributes, normalized, section);
     if (!identity) continue;
+    // Completion in either current source suppresses replay, even if another
+    // API representation is stale. Credit verification remains stricter.
+    if (questItemServerState(item) === 'complete') { completed.add(identity); continue; }
+    if (progress >= points) continue;
     appendQuestActivity(activities, seen, conflicts, { key: identity, url: normalized, points, section,
       ...(includeUi ? { title: String(attributes.title || item.title || '').slice(0, 512),
         ...questUiPolicy(item, attributes, Boolean(dailyDate), section, source) } : {}) }, includeUi);
   }
-  return activities.filter(activity => !conflicts.has(activity.key));
+  return activities.filter(activity => !conflicts.has(activity.key) && !completed.has(activity.key));
 }
 
 function extractQuestActivities(payload, now = new Date(), includeUi = false) {
   if (classifyQuestDashboard(payload)) return [];
   if (questFlyout(payload)) return extractFlyoutActivities(payload, now, includeUi);
   const dashboard = questDashboard(payload);
+  const excludedIds = excludedEarnQuestIds(payload);
   const dateKeys = questDateKeys(now);
   const daily = Object.entries(dashboard.dailySetPromotions)
     .filter(([date, items]) => dateKeys.has(date) && Array.isArray(items))
@@ -253,16 +315,19 @@ function extractQuestActivities(payload, now = new Date(), includeUi = false) {
   const activities = [];
   const seen = new Map();
   const conflicts = new Set();
+  const completed = completedQuestIds(sources, dateKeys);
   for (const { item, section } of sources) {
     if (!item || typeof item !== 'object') continue;
     const attributes = item.attributes && typeof item.attributes === 'object' ? item.attributes : {};
-    if (questItemServerState(item) === 'complete' ||
-        [item.hidden, attributes.hidden, item.isHidden, attributes.isHidden, item.isTestOnly, attributes.isTestOnly]
+    if (section !== 'Dashboard' && !item.dailySetDate && !attributes.daily_set_date &&
+        excludedIds.has(questItemStableIdentity(item, attributes))) continue;
+    if (isExcludedEarnQuest(item, attributes, section === 'Dashboard')) continue;
+    if ([item.hidden, attributes.hidden, item.isHidden, attributes.isHidden, item.isTestOnly, attributes.isTestOnly]
           .some(truthyQuestFlag)) continue;
     if (!currentQuestDate(attributes.daily_set_date || item.dailySetDate, dateKeys)) continue;
     const points = Number(item.pointProgressMax);
     const progress = Number(item.pointProgress || 0);
-    if (!Number.isFinite(points) || points <= 0 || progress >= points) continue;
+    if (!Number.isFinite(points) || points <= 0) continue;
     const destination = item.destinationUrl || item.attributes?.destination;
     if (typeof destination !== 'string' || !destination.trim()) continue;
     let url;
@@ -271,11 +336,13 @@ function extractQuestActivities(payload, now = new Date(), includeUi = false) {
     const normalized = url.href;
     const identity = questItemIdentity(item, item.attributes || {}, normalized, section);
     if (!identity) continue;
+    if (questItemServerState(item) === 'complete') { completed.add(identity); continue; }
+    if (progress >= points) continue;
     appendQuestActivity(activities, seen, conflicts, { key: identity, url: normalized, points, section,
       ...(includeUi ? { title: String(item.title || item.attributes?.title || '').slice(0, 512),
         ...questUiPolicy(item, item.attributes || {}, section === 'Dashboard', section, 'dashboard') } : {}) }, includeUi);
   }
-  return activities.filter(activity => !conflicts.has(activity.key));
+  return activities.filter(activity => !conflicts.has(activity.key) && !completed.has(activity.key));
 }
 
 function questActivityServerState(payload, activityKey, now = new Date()) {
@@ -285,10 +352,12 @@ function questActivityServerState(payload, activityKey, now = new Date()) {
   const flyout = questFlyout(payload);
   if (flyout) {
     const daily = [];
-    collectQuestItems(flyout.activities, daily);
+    // Scope controls planning, not credit evidence. An excluded group's
+    // reference to a real Daily Set card must not hide conflicting progress.
+    collectQuestItems(flyout.activities, daily, 0, true, false);
     candidates.push(...daily.map(item => ({ item, section: 'Dashboard' })));
     const promotions = [];
-    collectQuestItems(flyout.promotions, promotions);
+    collectQuestItems(flyout.promotions, promotions, 0, false, false);
     candidates.push(...promotions.map(item => ({ item, section: 'Earn' })));
     const rendered = payload.flyoutResult;
     if (rendered && typeof rendered === 'object') {

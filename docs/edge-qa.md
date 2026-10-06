@@ -2,6 +2,39 @@
 
 ## Browser evidence from this session
 
+Current release: **2.1.0**, with the same `auto-only-v19` behavior verified below.
+Installation steps use version 2.1.0; intermediate version numbers are retained
+as evidence history.
+
+Release 2.0.4 / `auto-only-v19` supersedes the historical manual-handoff behavior
+below. Auto All runs Search after the automatic Quest pass, skipping unavailable,
+missing and unconfirmed activities without opening manual destinations. A
+completed matching UI card suppresses activation despite a stale pending API.
+All 143 tests, syntax/asset checks and six native popup scenarios pass. The Edge
+fixture confirms zero card activations/manual tabs for three API-pending but
+DOM-completed cards, then one Search. Popup errors are zero; 16 fixture-page
+errors are the known `_G is not defined` message and remain separately recorded.
+See [current manual steps](manual-dom-qa.vi.md) and
+[TDD evidence](auto-only-pass.tdd.md).
+
+Release 2.0.3 / `daily-keep-v18` on 2026-10-06 keeps Daily Set and Keep earning,
+excluding multi-step Earn Quests and ongoing goals before task planning. The
+Edge fixture confirms both retained cards then executes one Search, with no
+tabs, activation or manual count for excluded goals or nested aliases. Previous
+Pause/Stop, pending eligible activity and reload regressions still pass. Seventeen
+intercepted fixture-page errors have the known `_G is not defined` message;
+popup JavaScript errors are zero. Account credit remains a manual check.
+
+Release 2.0.2 on 2026-10-05 makes Run all strictly Quest-first. The real Edge
+fixture holds completion while Quest verifies and while paused; no Search
+navigation occurs. After Resume and two affirmative responses, the first Search
+runs. An unconfirmed Quest ends Run all at ACTION NEEDED with zero Search
+navigations, unchanged Quest progress and a localized notice after popup reload.
+Stop during Auto All Quest suppresses Search. All 132 tests, syntax/asset checks
+and six native popup layout scenarios pass. Thirteen intercepted fixture-page
+errors remain the known `_G is not defined` message; popup errors remain zero.
+See [TDD evidence](auto-all-order.tdd.md).
+
 Release 2.0.1 verification on 2026-10-04: `npm test` **126/126 passed**, `npm run check`,
 script syntax and `git diff --check` passed. `node scripts/edge-smoke.cjs`
 passed with installed Edge, a clean profile and the real unpacked MV3 extension.
@@ -35,7 +68,7 @@ The graphite header and amber quest control add emphasis to the layered surfaces
 Current screenshots are in ignored `.qa/`; `screenshot.png`
 shows the real Vietnamese light toolbar popup in ready state, using an isolated profile.
 
-Current build: **official-cards-v17**. v15/v14/v13 results are historical.
+Current build: **daily-keep-v18**. v17/v15/v14/v13 results are historical.
 Current scope is one official activation per enabled pending point-bearing
 Daily Set or Earn card, including quiz-labelled cards. Unavailable/custom
 controls and unverified offers stay open with a remaining-count notice.
@@ -113,7 +146,7 @@ remains pending.
    Reopen the popup to inspect status if it closes when focus leaves it.
    In settings, **Quest wait limit** defaults to 10 seconds and can be increased
    to 300 seconds for a slow connection. It is a deadline, not a fixed sleep.
-6. The worker log must show `Quest scanner: official-cards-v17` and
+6. The worker log must show `Quest scanner: daily-keep-v18` and
    `Quest official card activated`. Compare
    the confirmed counter with the actual Completed markers on Rewards.
 
@@ -126,6 +159,7 @@ remains pending.
 | Daily quiz / Earn | A quiz-labelled Daily Set card omitted from the raw list and an undated Earn card are discovered and each official handler is activated once. Only server-confirmed results count. No quiz answers are automated. |
 | Unverified activity | An unconfirmed automatic activity is handed off in its existing result tab or a new destination tab. Manual tasks are not counted as credit. |
 | API filtering | Completed, zero-point, hidden, stale and off-origin entries are skipped. Title words and quiz labels do not exclude an otherwise valid card. Custom controls without a matching official anchor stay unconfirmed. |
+| Earn scope | Keep Daily Set and Keep earning. Multi-step Quests, ongoing goals and their nested steps/aliases must create no tasks, tabs or handoff and must not block Auto All Search. Metadata without recognized markers needs inspection; do not classify by title. |
 | Start after completion | Start again on the same day. Previously completed cards must not activate; when no eligible offers remain, no new task tab should open. |
 | Pause / resume | Pause freezes deadlines and denies queued click permits. Reopening the popup retains paused status. Resume continues without duplicating a confirmed activity. |
 | Stop during load/wait/pause | Controls/settings unlock on Stop acknowledgement. Start another run immediately; old callbacks must not change its state, navigate or close tabs. Already-dispatched site actions cannot be retracted. |
@@ -145,7 +179,7 @@ remains pending.
 | Mid-run partial progress | With five offers, first two confirmed, third pending and fourth absent, fifth is still attempted. Confirmed progress survives and the final state is `ACTION NEEDED`, not `Run failed`. |
 | Changed API schema | With an incompatible flyout/dashboard fixture, expect `QUEST_API_SCHEMA` and no activity tab. |
 | Signed out | Use a signed-out browser profile. Expect `QUEST_SIGN_IN_REQUIRED`, not successful completion. |
-| Existing search / Run all | Search uses the exact configured count/delay range. Run all continues searches after manual handoff, but never after Stop. No scripted scroll or random result click. |
+| Existing search / Run all | Search uses the exact configured count/delay range. Run all finishes the automatic Quest pass then starts Search; missing/manual-only/unconfirmed activities are skipped without a manual queue or credit claim. Pause at the phase boundary, Stop and terminal errors prevent Search. No scripted scroll or random result click. |
 
 For evidence, capture only generic status text and error codes. Omit account
 names, point balances, complete activity URLs/query strings, cookies and tokens.
