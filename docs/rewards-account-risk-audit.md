@@ -15,6 +15,15 @@ endpoints or answer quizzes. The monitoring window was removed, and Run all
 continues searches after handing off unconfirmed tasks. These changes do not
 establish account safety. See [current repair evidence](auto-quest-fix.md).
 
+Release 2.0.4 (2026-10-06) removes the manual task queue. Run all finishes its
+automatic card pass then Search; skipped/unconfirmed activities are reported
+without claiming credit. Existing Stop, Pause, URL, message and click-permit
+checks remain. No new permissions or reward-reporting requests were added.
+
+Historical: Release 2.0.2 (2026-10-05) changes Run all: unconfirmed/manual Quests now block
+Search. Search starts only after confirmed Quest completion or no eligible
+offers. The 2.0.1 handoff-to-Search behavior above is historical.
+
 ## Decision
 
 **Blocked for any claim that the extension is safe from account restriction.**

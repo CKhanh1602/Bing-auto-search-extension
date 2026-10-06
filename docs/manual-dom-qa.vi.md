@@ -1,6 +1,6 @@
-# Kiểm tra Auto Quest trên Edge — bản 2.0.1
+# Kiểm tra Auto Quest trên Edge — bản 2.1.0
 
-Scanner hiện tại: **official-cards-v17**. Lịch sử sửa và bằng chứng test nằm trong
+Scanner hiện tại: **auto-only-v19**. Lịch sử sửa và bằng chứng test nằm trong
 [auto-quest-fix.md](auto-quest-fix.md); tài liệu này mô tả bản đang phát hành.
 
 ## Cài và quan sát
@@ -8,11 +8,11 @@ Scanner hiện tại: **official-cards-v17**. Lịch sử sửa và bằng chứ
 1. Mở `edge://extensions`, bật **Developer mode**, chọn **Load unpacked** và
    chọn thư mục project hoặc thư mục đã giải nén ZIP chứa `manifest.json`.
    Nếu đã cài đúng thư mục, bấm **Reload**, đóng popup cũ rồi mở lại.
-2. Kiểm tra version **2.0.1** và không có lỗi load. Mở inspector của service worker
+2. Kiểm tra version **2.1.0** và không có lỗi load. Mở inspector của service worker
    để xem log; khi test worker tự ngừng, đóng inspector để nó không giữ worker sống.
 3. Tự đăng nhập Microsoft Rewards trên trình duyệt. Kiểm tra Daily set và Earn
    đang hiện thẻ, sau đó mở popup và chọn **Nhiệm vụ / Quests**.
-4. Log phải có `Quest scanner: official-cards-v17`. Đối chiếu số xác nhận trong
+4. Log phải có `Quest scanner: auto-only-v19`. Đối chiếu số xác nhận trong
    popup với dấu **Completed** trên Rewards, không chỉ với số tab được mở.
 5. Popup có nội dung rộng 420px. Thử đổi ngôn ngữ, theme, mở cài đặt và cuộn xuống.
    Popup toolbar đóng khi mất focus theo hành vi của Edge; mở lại để xem trạng thái.
@@ -24,15 +24,24 @@ Scanner hiện tại: **official-cards-v17**. Lịch sử sửa và bằng chứ
 ## Cách Quest hoạt động
 
 Extension đọc dữ liệu Rewards và chờ thẻ thật trên flyout Bing chính thức.
-Nó kích hoạt một lần thẻ Daily set hoặc Earn đang chờ và có điểm, kể cả thẻ mang
+Nó kích hoạt một lần thẻ Daily set hoặc Keep earning đang chờ và có điểm, kể cả thẻ mang
 nhãn quiz/poll. Nó không trả lời quiz hoặc thao tác tiếp ở trang đích.
 Thẻ đã hoàn thành, ẩn/test, không có điểm, có ngày cũ/tương lai hoặc URL không được
 phép bị bỏ qua. Metadata được đọc lại trước mỗi thẻ và DOM phải khớp duy nhất.
 Chỉ tăng tiến độ sau hai lần liên tiếp server xác nhận hoàn thành.
 
+Mục **Quests** nhiều bước trên trang Earn, mục tiêu trên Earn đang `In progress` và các
+task con của chúng được loại khỏi danh sách trước khi chạy. Ví dụ thẻ “Complete
+the Daily Set for 7 days in a row” là mục tiêu nhiều ngày, không phải ba thẻ Daily
+set hằng ngày. Các mục bị loại không tăng tổng task, không mở tab và không tạo
+thông báo cần thao tác khiến Auto All chờ. Việc lọc dựa trên metadata API; nếu
+Bing đổi metadata, cần đối chiếu lại API thay vì đoán theo tên thẻ.
+
 Thẻ không có trên flyout, điều khiển không được hỗ trợ hoặc chưa nhận xác nhận
-được để lại cho bạn kiểm tra, không tự coi là hoàn thành. Thông báo số quest còn
-lại là kết quả của run vừa xong; nó không theo dõi tiếp thao tác thủ công.
+được bỏ qua và loại khỏi tổng task, không tự coi là hoàn thành. Không mở tab
+manual hoặc tạo hàng đợi cần bạn thao tác. Popup ghi riêng số hoạt động bỏ qua.
+Nếu API có bản ghi hoàn thành cùng ID hoặc DOM có thẻ hoàn thành khớp URL/tên/điểm,
+extension không bấm lại. Dữ liệu mâu thuẫn không được dùng để ghi nhận điểm mới.
 
 ## Kiểm tra không làm lại và lifecycle
 
@@ -52,7 +61,9 @@ lại là kết quả của run vừa xong; nó không theo dõi tiếp thao tá
   phải có lỗi rõ ràng/quest chưa xác nhận, không tăng điểm giả và không bị kẹt.
   Lỗi 429 phải dừng, không retry tự động. Khôi phục mạng sau kiểm tra.
 - Thử Search và Run all với cấu hình của bạn: Search giữ đúng số lượng/delay;
-  Run all tiếp tục Search sau handoff, nhưng không tiếp tục sau Stop.
+  Run all chuyển sang Search sau khi lượt Quest tự động kết thúc, kể cả có thẻ
+  bỏ qua/chưa xác nhận. Không có thông báo manual làm kẹt luồng. Pause ở bước
+  chuyển pha và Stop vẫn phải chặn Search; lỗi mạng/đăng nhập nghiêm trọng vẫn dừng.
 
 ## Thông tin gửi khi gặp lỗi
 

@@ -4,10 +4,10 @@ A Chrome/Edge extension that automates daily Microsoft Rewards tasks — Bing se
 
 ## ✨ Features
 
-- **Quests** — Activates pending point-bearing Daily Set and Earn cards through the official flyout, including quiz-labelled cards, and verifies Rewards completion
+- **Daily activities** — Activates pending point-bearing Daily Set and Keep earning cards through the official flyout, including quiz-labelled cards, and verifies Rewards completion
 - **Manual handoff** — Keeps unavailable or unconfirmed offers open with a small remaining-quest notice
 - **Search** — Uses the configured search count and delay range, with a no-repeat query pool
-- **Run all** — Runs Daily Set and Earn cards, leaves unconfirmed offers open, then continues searches
+- **Run all** — Completes Daily Set and Keep earning cards before searches; multi-step Earn Quests, ongoing goals and their nested steps are excluded from tasks
 - **Pause / Stop** — Stop releases controls immediately; abandoned callbacks cannot affect a new run
 - **Bilingual UI** — English / Tiếng Việt
 - **Dark / Light Theme** — Graphite header, layered light/navy surfaces, cobalt primary action and amber quest control; popup content stays 420px wide
@@ -27,7 +27,7 @@ A Chrome/Edge extension that automates daily Microsoft Rewards tasks — Bing se
 4. Click **Load unpacked**
 5. Select the project folder
 
-Current release: **2.0.1**. You can also extract the release ZIP and select the
+Current release: **2.1.0**. You can also extract the release ZIP and select the
 extracted directory containing `manifest.json`. Reload an already installed
 unpacked extension, then close and reopen its popup.
 
@@ -64,20 +64,34 @@ unpacked extension, then close and reopen its popup.
 1. Requests the signed-in activity data from Bing's read-only Rewards flyout `getuserinfo` endpoint
 2. Merges raw promotion data with dated `flyoutResult.dailySetPromotions`, including Daily Set cards omitted from the raw list
 3. Rejects hidden, completed, zero-point, stale dated offers and destinations outside the Bing/Rewards allowlist
-4. Plans one official card activation for enabled pending Daily Set and Earn offers; quiz labels, titles and URL shape do not decide whether a click can earn credit
+4. Excludes Earn's multi-step Quests, ongoing goals and nested steps before planning. Keeps dated Daily Set and one-card Keep earning offers; quiz labels, titles and URL wording do not decide whether a click can earn credit
 5. Opens the official Bing Rewards flyout, refreshes each automatic offer by identity, and waits for a unique visible pending card matching current URL, title and points
 6. Activates the actual card through Bing's own handler, then requires two affirmative completion responses before increasing progress
-7. Leaves unavailable/custom controls and unconfirmed activities for inspection without counting them as complete; it never answers a quiz or automates destination interactions
+7. Skips unavailable/custom controls and unconfirmed activities without opening manual destinations or counting them as complete; it never answers a quiz or automates destination interactions
 
 A per-run guard uses the actual matched card URL, title and points to avoid
 replaying a handler when raw and rendered API records describe the same card.
 Offers with distinct identities are not merged by URL alone. A new user-started
 run can rescan the current pending cards.
 
-The remaining-quest notice records the handoff at the end of this run. Check
-Rewards for manual completion; the extension does not keep monitoring those
-tabs. There is no monitoring window. Closing/reopening the normal popup preserves
-the current run state and settings.
+The notice reports skipped activities separately from verified credit. Skipped
+activities are removed from the task total; no manual task queue is created.
+There is no monitoring window. Closing/reopening the normal popup preserves the
+current run state and settings.
+
+Run all finishes the automatic Quest pass before starting Search. Missing,
+unavailable and unconfirmed activities are skipped and do not block Search.
+Stop, Pause and terminal network/sign-in/browser errors still prevent advancement.
+Completion in either current API representation suppresses repeat activation;
+an exact matching completed DOM card also suppresses its handler even if the API
+is stale. Neither suppression is a claim of newly earned credit.
+
+Here the extension's Quest phase means Daily Set and Keep earning activities,
+not the dashboard section named **Quests**. Multi-step Earn campaigns and ongoing
+goals (such as a seven-day Daily Set streak) are not opened, counted or handed off.
+The scope filter uses structured type, activity-count and progress metadata;
+it does not match title words or mark excluded goals complete. Unknown future
+metadata may require a filter update.
 
 A completed offer is verified before counting and is not clicked again. A missing,
 ambiguous or changed card stays unconfirmed while later offers continue. Conflicting
@@ -116,7 +130,7 @@ Edge to catch intrinsic sizing regressions that a fixed-size browser tab misses.
 It checks English/Vietnamese, both themes, text contrast, settings scrolling and
 long error messages. Reload the extension and close/reopen its popup after a UI update.
 
-`npm run package:extension` produces `dist/bing-search-automator-2.0.1.zip`
+`npm run package:extension` produces `dist/bing-search-automator-2.1.0.zip`
 using an explicit runtime-file allowlist. Tests, browser profiles and development
 tools are excluded. See [GitHub preparation](docs/github-preparation.md) before
 publishing. GitHub Actions checks syntax, assets, tests and packaging on Node 22

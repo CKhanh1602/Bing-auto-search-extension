@@ -62,21 +62,21 @@ test('failed STOP does not optimistically enable another run', async () => {
   assert.match(h.node('statusText').textContent, /Extension unavailable/);
 });
 
-test('remaining manual quests notice survives popup reopen and localizes without claiming credit', async () => {
-  const state = { phase: 'complete', isRunning: false, current: 2, total: 3, manualQuestCount: 2 };
+test('skipped activities notice survives reopen and localizes without requesting manual tasks', async () => {
+  const state = { phase: 'complete', isRunning: false, current: 2, total: 3, manualQuestCount: 0, skippedQuestCount: 2 };
   const h = await popup({ saved: { lang: 'vi' }, initialState: state });
   assert.equal(h.node('manualQuestNotice').classList.contains('hidden'), false);
-  assert.match(h.node('manualQuestNotice').textContent, /Còn 2 quest/);
-  assert.match(h.node('manualQuestNotice').textContent, /kiểm tra hoàn thành trên Rewards/);
+  assert.match(h.node('manualQuestNotice').textContent, /Đã bỏ qua 2/);
+  assert.match(h.node('manualQuestNotice').textContent, /chưa xác nhận điểm/);
   assert.equal(h.document.documentElement.lang, 'vi');
   h.node('selLanguage').handlers.change({ target: { value: 'en' } });
-  assert.match(h.node('manualQuestNotice').textContent, /2 quests left for you/);
+  assert.match(h.node('manualQuestNotice').textContent, /2 activities skipped/);
   h.status({ phase: 'idle', isRunning: false, manualQuestCount: 0 });
   assert.equal(h.node('manualQuestNotice').classList.contains('hidden'), true);
 });
 
-test('handoff uses one instruction, while active/stopped status and command errors stay visible', async () => {
-  const state = { phase: 'needs_action', isRunning: false, manualQuestCount: 1 };
+test('skipped notice leaves active/stopped status and command errors visible', async () => {
+  const state = { phase: 'complete', isRunning: false, skippedQuestCount: 1 };
   const h = await popup({ initialState: state, command: () => { throw new Error('Worker unavailable'); } });
   assert.equal(h.node('statusTextRow').classList.contains('hidden'), true);
   assert.equal(h.node('manualQuestNotice').classList.contains('hidden'), false);
@@ -101,6 +101,11 @@ test('command rejection is visible even when its response returns the handoff st
   await new Promise(resolve => setImmediate(resolve));
   assert.equal(h.node('statusTextRow').classList.contains('hidden'), false);
   assert.equal(h.node('statusText').textContent, 'START_REJECTED');
+});
+
+test('legacy manual counts never display a manual task notice', async () => {
+  const h = await popup({initialState:{phase:'needs_action',isRunning:false,manualQuestCount:3}});
+  assert.equal(h.node('manualQuestNotice').classList.contains('hidden'), true);
 });
 
 test('pause/resume controls, settings accessibility and persisted theme remain functional', async () => {

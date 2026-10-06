@@ -12,6 +12,7 @@ let state = {
   current: 0,
   total: 0,
   manualQuestCount: 0,
+  skippedQuestCount: 0,
   statusText: 'Ready'
 };
 let shouldStop = false;
@@ -41,7 +42,14 @@ const stateReady = chrome.storage.local.get(STATE_STORAGE_KEY).then(async stored
   if (['idle', 'quests', 'search_desktop', 'needs_action', 'complete', 'stopped'].includes(saved.phase)) state.phase = saved.phase;
   state.current = Number.isSafeInteger(saved.current) && saved.current >= 0 ? saved.current : 0;
   state.total = Number.isSafeInteger(saved.total) && saved.total >= 0 ? saved.total : 0;
-  state.manualQuestCount = Number.isSafeInteger(saved.manualQuestCount) && saved.manualQuestCount >= 0 && saved.manualQuestCount <= 500 ? saved.manualQuestCount : 0;
+  // Manual handoff is retired. Never restore the old blocking task count.
+  state.manualQuestCount = 0;
+  state.skippedQuestCount = Number.isSafeInteger(saved.skippedQuestCount) && saved.skippedQuestCount >= 0 && saved.skippedQuestCount <= 500 ? saved.skippedQuestCount : 0;
+  if (state.phase === 'needs_action') {
+    state.phase = 'idle';
+    state.current = 0;
+    state.total = 0;
+  }
   const interruptedStatus = 'Run interrupted by service worker restart. Start again to rescan.';
   const knownStoppedStatuses = [interruptedStatus, BROWSER_RESTRICTED_STATUS, 'Stopped', 'Task tab was closed. Start again to rescan.',
     'Task page timed out. Check your connection and retry.', 'Task failed. Check the Rewards page and retry.',
@@ -55,7 +63,6 @@ const stateReady = chrome.storage.local.get(STATE_STORAGE_KEY).then(async stored
     'QUEST_DESTINATION_INVALID: Rewards returned an unsafe or malformed activity destination.'];
   state.statusText = saved.isRunning ? interruptedStatus
     : state.phase === 'complete' ? 'Previous run finished. Check Rewards for completion.'
-    : state.phase === 'needs_action' ? 'Some Quest activities still need action; their tabs were kept open.'
     : state.phase === 'stopped' ? (knownStoppedStatuses.includes(saved.statusText) ? saved.statusText : 'Previous run stopped. Start again to rescan.') : 'Ready';
   if (saved.isRunning) state.phase = 'stopped';
   await persistState();
@@ -144,6 +151,7 @@ function resetState() {
     current: 0,
     total: 0,
     manualQuestCount: 0,
+    skippedQuestCount: 0,
     statusText: 'Starting...'
   };
   shouldStop = false;
@@ -658,6 +666,7 @@ async function activateQuestCard(tabId, activity, tabSignal, run = activeRun, ac
       throw error;
     }
     if (probe.diagnostic) diagnostic = probe.diagnostic;
+    if (probe.status === 'QUEST_CARD_COMPLETE') throw new Error('QUEST_ALREADY_COMPLETE');
     if (probe.status === 'QUEST_CARD_READY') {
       let fingerprint;
       if (activatedCards) {
@@ -680,6 +689,7 @@ async function activateQuestCard(tabId, activity, tabSignal, run = activeRun, ac
       const activated = await probeQuestCard(tabId, activity, 'activate', probe.documentId, probe.signature, tabSignal, remaining, run);
       assertRun(run);
       if (activated.status === 'QUEST_UI_PAUSED') continue; // Explicit denial means no click occurred.
+      if (activated.status === 'QUEST_CARD_COMPLETE') throw new Error('QUEST_ALREADY_COMPLETE');
       if (activated.status !== 'QUEST_CARD_ACTIVATED') throw new Error(activated.status);
       if (fingerprint) activatedCards.add(fingerprint);
       addLog('Quest official card activated');
@@ -734,29 +744,6 @@ function questNavigationMatches(actual, expected) {
   try { const left = normalize(actual); return !!left && left === normalize(expected); } catch { return false; }
 }
 
-async function openManualQuests(tasks, run) {
-  const opened = new Set();
-  for (const { activity, resultTabs = [] } of tasks) {
-    await checkPause(run);
-    assertRun(run);
-    if (!validQuestActivity(activity)) throw new Error('QUEST_DESTINATION_INVALID');
-    if (opened.has(activity.url)) continue;
-    let alreadyOpen = false;
-    for (const id of resultTabs) {
-      const tab = await chrome.tabs.get(id).catch(() => null);
-      assertRun(run);
-      if (tab && questNavigationMatches(tab.url || tab.pendingUrl, activity.url)) { alreadyOpen = true; break; }
-    }
-    if (!alreadyOpen) {
-      await chrome.tabs.create({ url: activity.url, active: false });
-      assertRun(run);
-    }
-    opened.add(activity.url);
-  }
-  assertRun(run);
-  update({ manualQuestCount: tasks.length }, run);
-}
-
 function questActivationFingerprint(activity) {
   const url = new URL(activity.url);
   for (const key of [...url.searchParams.keys()]) if (key.toLowerCase() === 'form') url.searchParams.delete(key);
@@ -766,21 +753,19 @@ function questActivationFingerprint(activity) {
 
 async function doQuests(run = activeRun) {
   assertRun(run);
-  addLog('Quest scanner: official-cards-v17');
-  update({ phase: 'quests', statusText: 'Reading Rewards activities...', current: 0, total: 0, manualQuestCount: 0 }, run);
+  addLog('Quest scanner: auto-only-v19');
+  update({ phase: 'quests', statusText: 'Reading Rewards activities...', current: 0, total: 0, manualQuestCount: 0, skippedQuestCount: 0 }, run);
   const discovered = await loadQuestActivities(run);
   assertRun(run);
   if (discovered.some(activity => !validQuestActivity(activity))) throw new Error('QUEST_DESTINATION_INVALID');
   const { automatic: activities, manual } = partitionQuestActivities(discovered);
   const activatedCards = new Set();
-  const manualTasks = manual.map(activity => ({ activity }));
-  update({ total: activities.length, statusText: activities.length + ' activities' }, run);
+  let skipped = manual.length;
+  update({ total: activities.length, skippedQuestCount: skipped, statusText: activities.length + ' activities' }, run);
   addLog('Quest plan: daily=' + activities.filter(activity => activity.daily).length +
-    ',earn=' + activities.filter(activity => !activity.daily && activity.section === 'Earn').length + ',manual=' + manualTasks.length);
+    ',keep=' + activities.filter(activity => !activity.daily && activity.section === 'Earn').length + ',skipped=' + skipped);
   if (activities.length === 0) {
-    await openManualQuests(manualTasks, run);
-    assertRun(run);
-    return manualTasks.length > 0;
+    return false;
   }
   await checkPause(run);
   assertRun(run);
@@ -858,7 +843,7 @@ async function doQuests(run = activeRun) {
       // target as unconfirmed and continue, rather than aborting other offers.
       // Uncertain activation, browser, network, sign-in, Stop and tab errors
       // remain terminal and are never automatically replayed.
-      if (!['QUEST_CARD_NOT_READY', 'QUEST_CARD_AMBIGUOUS', 'QUEST_CARD_CHANGED'].includes(error.message)) throw error;
+      if (!['QUEST_CARD_NOT_READY', 'QUEST_CARD_AMBIGUOUS', 'QUEST_CARD_CHANGED', 'QUEST_ALREADY_COMPLETE'].includes(error.message)) throw error;
       pendingReason = error.message;
       const refreshed = await refreshQuestActivity(activity, tabController.signal, run);
       assertRun(run);
@@ -881,16 +866,15 @@ async function doQuests(run = activeRun) {
       // also have been opened manually; never close it based on opener alone.
       addLog('Quest activity ' + (index + 1) + '/' + activities.length + ' confirmed');
     } else {
-      manualTasks.push({ activity, resultTabs: [...children] });
-      update({ statusText: state.current + '/' + activities.length + ' confirmed; ' + manualTasks.length + ' need action' }, run);
-      addLog('Quest activity ' + (index + 1) + '/' + activities.length + ' needs action: ' + pendingReason);
-      addLog('Quest activity ' + (index + 1) + '/' + activities.length + ' not confirmed; task tab kept open');
+      skipped++;
+      update({ total: Math.max(state.current, state.total - 1), skippedQuestCount: skipped,
+        statusText: state.current + ' confirmed; ' + skipped + ' skipped' }, run);
+      addLog('Quest activity ' + (index + 1) + '/' + activities.length + ' skipped: ' + pendingReason);
     }
   }
-  await openManualQuests(manualTasks, run);
   assertRun(run);
-  addLog('Quest verification finished: confirmed=' + state.current + ',manual=' + manualTasks.length);
-  return manualTasks.length > 0;
+  addLog('Quest verification finished: confirmed=' + state.current + ',skipped=' + skipped);
+  return false;
 }
 
 // ============================================================
@@ -904,10 +888,9 @@ async function runEngine(action, cfg) {
   try {
     await persistenceQueue;
     assertRun(run);
-    let questNeedsAction = false;
     let questHadActivities = false;
     if (action === 'START_QUEST') {
-      questNeedsAction = await doQuests(run);
+      await doQuests(run);
       assertRun(run);
       questHadActivities = state.total > 0;
     }
@@ -917,21 +900,23 @@ async function runEngine(action, cfg) {
     }
     else if (action === 'START_ALL') {
       // 1. Run Quests first (shows Quest progress bar)
-      questNeedsAction = await doQuests(run);
+      await doQuests(run);
       assertRun(run);
       questHadActivities = state.total > 0;
-      // Manual offers are handed to the user; they do not block searches.
+      // Finish the automatic Quest pass before Search. Missing, manual-only
+      // and unconfirmed cards are skipped; terminal errors still stop above.
+      await checkPause(run);
+      assertRun(run);
+      addLog('Run all: Quest pass finished; starting Search');
       await doDesktopSearches(cfg, run);
       assertRun(run);
     }
 
     if (shouldStop) {
       await finish('Stopped', 'stopped', run);
-    } else if (questNeedsAction) {
-      await finish(state.manualQuestCount > 0 ? `${state.manualQuestCount} quests need your action; tabs opened.`
-        : 'Some Quest activities still need action; their tabs were kept open.', 'needs_action', run);
     } else {
-      await finish(action !== 'START_QUEST' ? 'Completed!'
+      await finish(state.skippedQuestCount > 0 ? 'Run finished; some Quest activities were skipped, not credited.'
+        : action !== 'START_QUEST' ? 'Completed!'
         : questHadActivities ? 'Quest activities confirmed by Rewards.'
         : 'No eligible Quest offers found; check Rewards for credit.', 'complete', run);
     }

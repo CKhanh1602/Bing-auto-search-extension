@@ -168,16 +168,31 @@ test('restart does not restore arbitrary text disguised as a known quest error',
   assert.doesNotMatch(state.statusText, /private-token-user-data/);
 });
 
-test('unverified Quest activities persist as needing user action without asserting credit', async () => {
+test('skipped Quest count persists without reviving manual tasks or asserting credit', async () => {
   const w = worker();
-  w.run('doQuests = async () => true');
+  w.run('doQuests = async () => { update({skippedQuestCount:3}); return false; }');
   await w.message('START_QUEST');
   await new Promise(resolve => setTimeout(resolve, 5));
   const state = await w.message('GET_STATUS');
-  assert.equal(state.phase, 'needs_action');
-  assert.match(state.statusText, /need action/);
+  assert.equal(state.phase, 'complete');
+  assert.match(state.statusText, /skipped, not credited/);
   const restarted = worker(w.storage);
-  assert.equal((await restarted.message('GET_STATUS')).phase, 'needs_action');
+  const after = await restarted.message('GET_STATUS');
+  assert.equal(after.phase, 'complete');
+  assert.equal(after.skippedQuestCount, 3);
+  assert.equal(after.manualQuestCount, 0);
+});
+
+test('upgrade discards stored manual handoff and its Search-blocking message', async () => {
+  const w = worker({engineState:{phase:'needs_action',isRunning:false,manualQuestCount:3,
+    current:0,total:3,
+    statusText:'Search not started: finish remaining Quests, then run all again.'}});
+  const state = await w.message('GET_STATUS');
+  assert.equal(state.phase, 'idle');
+  assert.equal(state.manualQuestCount, 0);
+  assert.equal(state.skippedQuestCount, 0);
+  assert.equal(state.total, 0);
+  assert.equal(state.statusText, 'Ready');
 });
 
 test('Quest reports completion only when Rewards-confirmed progress reaches total', async () => {
@@ -209,12 +224,74 @@ test('stopping START_ALL during quests suppresses subsequent desktop searches', 
   assert.equal((await w.message('GET_STATUS')).phase, 'stopped');
 });
 
-test('START_ALL continues searches after handing manual Rewards offers to the user', async () => {
+test('START_ALL continues Search after unconfirmed cards are skipped', async () => {
   const w = worker();
-  w.run('globalThis.desktopStarted = false; doDesktopSearches = async () => { desktopStarted = true; }; doQuests = async () => true');
+  w.run('globalThis.desktopStarted = false; doDesktopSearches = async () => { desktopStarted = true; }; doQuests = async () => { update({current:2,total:3,skippedQuestCount:1}); return false; }');
   await w.run("runEngine('START_ALL', { desktopSearches: 1, minDelay: 1, maxDelay: 1 })");
   assert.equal(w.run('desktopStarted'), true);
-  assert.equal((await w.message('GET_STATUS')).phase, 'needs_action');
+  const state = await w.message('GET_STATUS');
+  assert.equal(state.phase, 'complete');
+  assert.equal(state.current, 2);
+  assert.equal(state.total, 3);
+  assert.match(state.statusText, /skipped, not credited/);
+  assert.equal((await worker(w.storage).message('GET_STATUS')).skippedQuestCount, 1);
+});
+
+test('START_ALL waits for confirmed Quests before starting Search', async () => {
+  const w = worker();
+  await w.run('stateReady');
+  w.run(`globalThis.steps=[];doQuests=async()=>{steps.push('quest-start');return new Promise(resolve=>{
+    globalThis.completeQuests=()=>{update({current:2,total:2});steps.push('quest-confirmed');resolve(false);};
+  });};doDesktopSearches=async()=>{steps.push('search-start');};`);
+  const engine = w.run("runEngine('START_ALL', {desktopSearches:1,minDelay:1,maxDelay:1})");
+  await new Promise(resolve => setImmediate(resolve));
+  assert.deepEqual(Array.from(w.run('steps')), ['quest-start']);
+  w.run('completeQuests()');
+  await engine;
+  assert.deepEqual(Array.from(w.run('steps')), ['quest-start','quest-confirmed','search-start']);
+  assert.equal((await w.message('GET_STATUS')).phase, 'complete');
+});
+
+test('START_ALL does not wait for skipped or unconfirmed Quest progress', async () => {
+  for (const result of [
+    '{current:0,total:0,skippedQuestCount:1}',
+    '{current:1,total:2,manualQuestCount:0}'
+  ]) {
+    const w = worker();
+    w.run(`globalThis.desktopStarted=false;doDesktopSearches=async()=>{desktopStarted=true;};doQuests=async()=>{update(${result});return false;};`);
+    await w.run("runEngine('START_ALL', {desktopSearches:1,minDelay:1,maxDelay:1})");
+    assert.equal(w.run('desktopStarted'), true, result);
+    assert.equal((await w.message('GET_STATUS')).phase, 'complete');
+  }
+});
+
+test('START_ALL starts Search when no eligible Quest remains', async () => {
+  const w = worker();
+  w.run('globalThis.desktopStarted=false;doDesktopSearches=async()=>{desktopStarted=true;};doQuests=async()=>false;');
+  await w.run("runEngine('START_ALL', {desktopSearches:1,minDelay:1,maxDelay:1})");
+  assert.equal(w.run('desktopStarted'), true);
+});
+
+test('START_ALL respects Pause at the Quest-to-Search boundary', async () => {
+  const w = worker();
+  await w.run('stateReady');
+  w.run(`globalThis.desktopStarted=false;doDesktopSearches=async()=>{desktopStarted=true;};
+    doQuests=async()=>{update({current:1,total:1});isPaused=true;pauseStartedAt=Date.now();return false;};`);
+  const engine = w.run("runEngine('START_ALL', {desktopSearches:1,minDelay:1,maxDelay:1})");
+  await new Promise(resolve => setImmediate(resolve));
+  const pausedSearch = w.run('desktopStarted');
+  await w.message('RESUME');
+  await engine;
+  assert.equal(pausedSearch, false);
+  assert.equal(w.run('desktopStarted'), true);
+});
+
+test('START_ALL does not start Search after a Quest error', async () => {
+  const w = worker();
+  w.run('globalThis.desktopStarted=false;doDesktopSearches=async()=>{desktopStarted=true;};doQuests=async()=>{throw new Error("QUEST_API_TIMEOUT");};');
+  await w.run("runEngine('START_ALL', {desktopSearches:1,minDelay:1,maxDelay:1})");
+  assert.equal(w.run('desktopStarted'), false);
+  assert.equal((await w.message('GET_STATUS')).phase, 'stopped');
 });
 
 test('extension dashboard in a tab may control the worker; web tabs remain denied', async () => {

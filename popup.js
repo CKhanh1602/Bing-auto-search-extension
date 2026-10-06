@@ -59,7 +59,7 @@ document.addEventListener('DOMContentLoaded', () => {
       maxDelayLabel: 'Max delay (s)',
       dailyTool: 'YOUR DAILY TOOL',
       questText: 'Quests', searchText: 'Search', allText: 'Run all', credit: 'Made by',
-      manualNotice: count => `${count} quest${count === 1 ? '' : 's'} left for you. Opened in tabs; check completion on Rewards.`,
+      skippedNotice: count => `${count} ${count === 1 ? 'activity' : 'activities'} skipped without confirmed credit. Check Rewards for details.`,
       pauseText: 'Pause',
       resumeText: 'Resume',
       stopText: 'Stop',
@@ -69,16 +69,17 @@ document.addEventListener('DOMContentLoaded', () => {
         'quests': 'QUEST',
         'search_desktop': 'SEARCHING',
         'needs_action': 'ACTION NEEDED',
-        'complete': 'COMPLETED',
+        'complete': 'FINISHED',
         'stopped': 'STOPPED',
         'paused': 'PAUSED'
       },
       defaultStatusText: 'Ready when you are.',
       statusMap: {
+        'Run finished; some Quest activities were skipped, not credited.': 'Run finished; some activities were skipped without confirmed credit.',
         'Ready': 'Ready when you are.',
         'Starting...': 'Starting automation...',
         'Processing Quests...': 'Processing Rewards cards...',
-        'Reading Rewards activities...': 'Reading Daily Set and Earn activities...',
+        'Reading Rewards activities...': 'Reading Daily Set and Keep earning activities...',
         'Reading daily Rewards activities...': 'Reading daily Rewards activities...',
         'Desktop Search...': 'Running Bing searches...',
         'Stopping...': 'Stopping automation...',
@@ -100,7 +101,7 @@ document.addEventListener('DOMContentLoaded', () => {
       maxDelayLabel: 'Chờ tối đa (s)',
       dailyTool: 'CÔNG CỤ HẰNG NGÀY',
       questText: 'Nhiệm vụ', searchText: 'Tìm kiếm', allText: 'Chạy tất cả', credit: 'Tác giả',
-      manualNotice: count => `Còn ${count} quest cần bạn thực hiện. Đã mở các tab; kiểm tra hoàn thành trên Rewards.`,
+      skippedNotice: count => `Đã bỏ qua ${count} hoạt động; chưa xác nhận điểm. Xem chi tiết trên Rewards.`,
       pauseText: 'Tạm dừng',
       resumeText: 'Tiếp tục',
       stopText: 'Dừng hẳn',
@@ -110,17 +111,18 @@ document.addEventListener('DOMContentLoaded', () => {
         'quests': 'QUEST',
         'search_desktop': 'ĐANG SEARCH',
         'needs_action': 'CẦN THAO TÁC',
-        'complete': 'HOÀN THÀNH',
+        'complete': 'ĐÃ CHẠY XONG',
         'stopped': 'ĐÃ DỪNG',
         'paused': 'TẠM DỪNG'
       },
       defaultStatusText: 'Sẵn sàng hoạt động...',
       statusMap: {
+        'Run finished; some Quest activities were skipped, not credited.': 'Đã chạy xong; có hoạt động được bỏ qua, chưa xác nhận điểm.',
         'Ready': 'Sẵn sàng hoạt động...',
         'Starting...': 'Đang bắt đầu...',
         'Processing Quests...': 'Đang tự động làm Quest & Activities...',
         'Reading daily Rewards activities...': 'Đang đọc nhiệm vụ hằng ngày...',
-        'Reading Rewards activities...': 'Đang đọc nhiệm vụ Daily Set và Earn...',
+        'Reading Rewards activities...': 'Đang đọc Daily set và Keep earning...',
         'Desktop Search...': 'Đang tìm kiếm Bing...',
         'Stopping...': 'Đang dừng tiến trình...',
         'Stopped': 'Đã dừng tiến trình.',
@@ -338,12 +340,12 @@ document.addEventListener('DOMContentLoaded', () => {
     elements.progressBar.style.width = `${percentage}%`;
     elements.progressTrack.setAttribute('aria-valuenow', String(Math.round(percentage)));
     elements.progressText.textContent = `${current} / ${total}`;
-    const manualCount = Number.isInteger(state.manualQuestCount) && state.manualQuestCount > 0 ? state.manualQuestCount : 0;
-    elements.manualQuestNotice.classList.toggle('hidden', manualCount === 0);
-    elements.manualQuestNotice.textContent = manualCount ? t.manualNotice(manualCount) : '';
-    // At handoff the notice is the full instruction; avoid repeating it above.
-    // Active runs, stopped runs and command errors still expose status text.
-    elements.statusTextRow.classList.toggle('hidden', state.phase === 'needs_action' && !state.isRunning && manualCount > 0);
+    const skippedCount = Number.isInteger(state.skippedQuestCount) && state.skippedQuestCount > 0 ? state.skippedQuestCount : 0;
+    elements.manualQuestNotice.classList.toggle('hidden', skippedCount === 0);
+    elements.manualQuestNotice.textContent = skippedCount ? t.skippedNotice(skippedCount) : '';
+    // The finished-run summary repeats the skipped notice. Keep one message
+    // so native popup controls fit; active/stopped states and errors stay visible.
+    elements.statusTextRow.classList.toggle('hidden', state.phase === 'complete' && !state.isRunning && skippedCount > 0);
     
     // Status text localization
     if (state.statusText) {
